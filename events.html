@@ -78,7 +78,7 @@
 
             <section class="card">
                 <h2>コミニティ 開催日一覧</h2>
-                <p class="note">開催予定日をタップすると参加フォームの対象イベントに自動設定されます。</p>
+                <p class="note">単発開催の「参加登録」ボタンを押すと参加フォームが開きます。</p>
                 <div class="filter-bar">
                     <label class="filter-field">
                         <span>表示種別</span>
@@ -102,10 +102,12 @@
                 <div id="managed-events-list" class="section-stack"></div>
                 <p id="managed-events-empty" class="note hidden">条件に一致するコミニティ開催日がありません。</p>
             </section>
+        </main>
 
-            <section class="card">
-                <h2>コミニティ 参加フォーム</h2>
-                <p class="note">上の開催日一覧から選択した回に参加登録できます。氏名、電話番号、組・班を入力して送信してください。</p>
+        <div id="event-recruit-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="event-recruit-modal-title">
+            <section class="modal-card">
+                <h2 id="event-recruit-modal-title">コミニティ参加フォーム</h2>
+                <p class="note">氏名、電話番号、組・班を入力して登録してください。</p>
                 <form id="event-recruit-form" class="inline-form">
                     <label>対象イベント
                         <select id="recruit-event-id" name="eventId" required></select>
@@ -122,11 +124,15 @@
                     <label>参加人数
                         <input name="count" type="number" min="1" value="1" required>
                     </label>
-                    <button class="button" type="submit">コミニティに参加登録</button>
+                    <div class="button-row modal-button-row">
+                        <button class="button" type="submit">登録</button>
+                        <button class="button" id="event-recruit-cancel" type="button">キャンセル</button>
+                        <button class="button" id="event-recruit-close" type="button">戻る</button>
+                    </div>
                     <p id="event-recruit-status" class="note" aria-live="polite"></p>
                 </form>
             </section>
-        </main>
+        </div>
 
         <footer class="site-footer">
             <p>&copy; 2026 若松町町内会ポータルサイト</p>

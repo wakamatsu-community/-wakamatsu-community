@@ -803,6 +803,39 @@ body {
     width: 100%;
 }
 
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    background: rgba(23, 30, 26, 0.5);
+    display: grid;
+    place-items: center;
+    padding: 16px;
+}
+
+.modal-card {
+    width: min(100%, 560px);
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    background: #fff;
+    border-radius: 14px;
+    border: 1px solid #d7e1ee;
+    box-shadow: 0 16px 36px rgba(34, 46, 39, 0.24);
+    padding: 20px;
+}
+
+.modal-button-row {
+    gap: 10px;
+}
+
+#event-recruit-cancel {
+    background: #ef7c3a;
+}
+
+#event-recruit-close {
+    background: #5f6f68;
+}
+
 .calendar-shell {
     border: 1px solid #d9e2ef;
     border-radius: 12px;

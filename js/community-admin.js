@@ -168,7 +168,11 @@ function createManagedEventCard(event) {
 
 function isLearningEvent(event) {
     const text = `${event?.category || ""} ${event?.title || ""}`.toLowerCase();
-    return text.includes("学び") || text.includes("コミニティ") || text.includes("コミュニティ");
+    return text.includes("学び")
+        || text.includes("コミニティ")
+        || text.includes("コミュニティ")
+        || text.includes("コミュニティー")
+        || text.includes("community");
 }
 
 function getLearningCategories(events) {
@@ -191,7 +195,9 @@ function createLearningEventCard(event) {
         <p><strong>開催日:</strong> ${event.scheduleLabel || "未設定"}</p>
         <p><strong>会場:</strong> ${event.place || "未設定"}</p>
         <p>${event.description || "詳細はコミニティカレンダーをご確認ください。"}</p>
-        <button class="button" type="button" data-action="select-learning-event">この開催日に参加登録</button>
+        ${event.type === "special"
+        ? '<button class="button" type="button" data-action="select-learning-event">この開催日に参加登録</button>'
+        : ""}
     `;
 
     return card;
@@ -307,9 +313,71 @@ function bindRecruitForm(config, events) {
         status.textContent = ok
             ? "参加希望を送信しました。"
             : "参加希望を記録しました（Apps Script未設定のためローカル処理）。";
+        const selectedEventId = select.value;
         form.reset();
         if (select.options.length > 0) {
-            select.selectedIndex = 0;
+            const keepOption = Array.from(select.options).some((option) => option.value === selectedEventId);
+            if (keepOption) {
+                select.value = selectedEventId;
+            } else {
+                select.selectedIndex = 0;
+            }
+        }
+    });
+}
+
+function openRecruitModal() {
+    const modal = document.getElementById("event-recruit-modal");
+    if (!modal) {
+        return;
+    }
+    modal.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+}
+
+function closeRecruitModal() {
+    const modal = document.getElementById("event-recruit-modal");
+    if (!modal) {
+        return;
+    }
+    modal.classList.add("hidden");
+    document.body.style.overflow = "";
+}
+
+function bindRecruitModalActions() {
+    const modal = document.getElementById("event-recruit-modal");
+    const form = document.getElementById("event-recruit-form");
+    const cancelButton = document.getElementById("event-recruit-cancel");
+    const closeButton = document.getElementById("event-recruit-close");
+    const status = document.getElementById("event-recruit-status");
+    const select = document.getElementById("recruit-event-id");
+
+    if (!(modal && form && cancelButton && closeButton && status && select)) {
+        return;
+    }
+
+    cancelButton.addEventListener("click", () => {
+        const selectedEventId = select.value;
+        form.reset();
+        status.textContent = "入力内容をクリアしました。";
+        if (Array.from(select.options).some((option) => option.value === selectedEventId)) {
+            select.value = selectedEventId;
+        }
+    });
+
+    closeButton.addEventListener("click", () => {
+        closeRecruitModal();
+    });
+
+    modal.addEventListener("click", (event) => {
+        if (event.target === modal) {
+            closeRecruitModal();
+        }
+    });
+
+    window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !modal.classList.contains("hidden")) {
+            closeRecruitModal();
         }
     });
 }
@@ -499,8 +567,9 @@ function bindLearningEventSelection(events) {
     const list = document.getElementById("managed-events-list");
     const select = document.getElementById("recruit-event-id");
     const form = document.getElementById("event-recruit-form");
+    const status = document.getElementById("event-recruit-status");
 
-    if (!list || !select || !form) {
+    if (!list || !select || !form || !status) {
         return;
     }
 
@@ -522,7 +591,8 @@ function bindLearningEventSelection(events) {
         }
 
         select.value = matched.id;
-        form.scrollIntoView({ behavior: "smooth", block: "start" });
+        status.textContent = "";
+        openRecruitModal();
         const nameInput = form.querySelector('input[name="name"]');
         if (nameInput instanceof HTMLElement) {
             nameInput.focus();
@@ -536,12 +606,14 @@ export async function initManagedEventsPage(config) {
         return;
     }
 
-    const events = (await loadManagedEvents(config)).filter(isLearningEvent);
+    const loadedEvents = await loadManagedEvents(config);
+    const events = loadedEvents.filter(isLearningEvent);
+    const displayEvents = events.length > 0 ? events : loadedEvents;
     await loadEventCategories(config, events);
-    const categories = getLearningCategories(events);
+    const categories = getLearningCategories(displayEvents);
 
     list.innerHTML = "";
-    events.forEach((event) => {
+    displayEvents.forEach((event) => {
         list.appendChild(createLearningEventCard(event));
     });
 
@@ -555,8 +627,9 @@ export async function initManagedEventsPage(config) {
     search?.addEventListener("input", applyEventFilters);
     applyEventFilters();
 
-    bindRecruitForm(config, events);
-    bindLearningEventSelection(events);
+    bindRecruitForm(config, displayEvents);
+    bindRecruitModalActions();
+    bindLearningEventSelection(displayEvents);
 }
 
 export function initAdminCommunityForms(config) {
