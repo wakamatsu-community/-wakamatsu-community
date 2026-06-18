@@ -5,7 +5,19 @@ export const GAS_URL = "";
 function resolveGasUrl() {
     const runtimeBuildUrl = String(RUNTIME_CONFIG?.GAS_WEB_APP_URL || "").trim();
     const runtimeUrl = typeof window !== "undefined" ? String(window.GAS_URL || "").trim() : "";
-    return runtimeBuildUrl || runtimeUrl || GAS_URL;
+    const legacyWindowUrl = typeof window !== "undefined" ? String(window.GAS_WEB_APP_URL || "").trim() : "";
+    const resolved = runtimeBuildUrl || runtimeUrl || legacyWindowUrl || GAS_URL;
+    if (!resolved) {
+        return "";
+    }
+    if (resolved.includes("REPLACE_WITH_YOUR_DEPLOYMENT_ID")) {
+        return "";
+    }
+    return resolved;
+}
+
+function throwGasUrlNotConfigured() {
+    throw new Error("GAS URL is not configured (GAS_WEB_APP_URL が未設定です: GitHub Secrets の GAS_WEB_APP_URL を確認してください)");
 }
 
 export function getGasUrl() {
@@ -27,7 +39,7 @@ export async function gasGet(params = {}) {
     const query = toQueryString(params);
     const baseUrl = resolveGasUrl();
     if (!baseUrl) {
-        throw new Error("GAS URL is not configured");
+        throwGasUrlNotConfigured();
     }
     const url = query ? `${baseUrl}?${query}` : baseUrl;
     const response = await fetch(url, { method: "GET" });
@@ -40,7 +52,7 @@ export async function gasGet(params = {}) {
 export async function gasPost(payload = {}) {
     const url = resolveGasUrl();
     if (!url) {
-        throw new Error("GAS URL is not configured");
+        throwGasUrlNotConfigured();
     }
     const response = await fetch(url, {
         method: "POST",
@@ -66,28 +78,16 @@ export async function gasPost(payload = {}) {
 }
 
 export async function gasPostForm(formData) {
-    const url = resolveGasUrl();
-    if (!url) {
-        throw new Error("GAS URL is not configured");
+    const payload = {};
+    if (formData && typeof formData.entries === "function") {
+        for (const [key, value] of formData.entries()) {
+            if (Object.prototype.hasOwnProperty.call(payload, key)) {
+                const prev = payload[key];
+                payload[key] = Array.isArray(prev) ? [...prev, value] : [prev, value];
+            } else {
+                payload[key] = value;
+            }
+        }
     }
-    const response = await fetch(url, {
-        method: "POST",
-        body: formData
-    });
-    if (!response.ok) {
-        throw new Error(`GAS POST(form) failed: ${response.status}`);
-    }
-    const parsed = await response.json().catch(() => ({}));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return {
-            ...parsed,
-            _httpStatus: response.status,
-            _requestUrl: url
-        };
-    }
-    return {
-        data: parsed,
-        _httpStatus: response.status,
-        _requestUrl: url
-    };
+    return gasPost(payload);
 }

@@ -27,6 +27,15 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Validate required secrets
+        env:
+          GAS_WEB_APP_URL: ${{ secrets['GAS_WEB_APP_URL'] }}
+        run: |
+          if [ -z "${GAS_WEB_APP_URL}" ]; then
+            echo "ERROR: GAS_WEB_APP_URL secret is missing or empty"
+            exit 1
+          fi
+
       - name: Build static files with injected runtime config
         env:
           GAS_WEB_APP_URL: ${{ secrets['GAS_WEB_APP_URL'] }}
