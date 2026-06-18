@@ -12,7 +12,10 @@ from pathlib import Path
 
 _gas_web_app_url = os.environ.get("GAS_WEB_APP_URL")
 if not _gas_web_app_url:
-    print("[ERROR] 環境変数 GAS_WEB_APP_URL が未設定です。GitHubシークレットを確認してください。", file=sys.stderr)
+    print("[ERROR] GitHub Secrets の GAS_WEB_APP_URL が未設定または誤設定です。", file=sys.stderr)
+    sys.exit(1)
+if "REPLACE_WITH_YOUR_DEPLOYMENT_ID" in _gas_web_app_url:
+    print("[ERROR] GitHub Secrets の GAS_WEB_APP_URL が未設定または誤設定です（プレースホルダーが残っています）。", file=sys.stderr)
     sys.exit(1)
 GAS_WEB_APP_URL: str = _gas_web_app_url
 
