@@ -78,6 +78,8 @@ def inject_runtime_config() -> None:
         key: os.getenv(key, "").strip()
         for key in RUNTIME_CONFIG_KEYS
     }
+    if not runtime_config["GAS_WEB_APP_URL"]:
+        raise RuntimeError("GAS_WEB_APP_URL が未設定です。GitHub Secrets の GAS_WEB_APP_URL を確認してください")
     runtime_config_path = DIST / "js" / "runtime-config.js"
     runtime_config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -85,6 +87,8 @@ def inject_runtime_config() -> None:
         "window.RUNTIME_CONFIG = "
         + json.dumps(runtime_config, ensure_ascii=False, indent=2)
         + ";\n\n"
+        + "window.GAS_WEB_APP_URL = window.RUNTIME_CONFIG.GAS_WEB_APP_URL;\n"
+        + "window.GAS_URL = window.RUNTIME_CONFIG.GAS_WEB_APP_URL;\n\n"
         + "const runtime = (typeof window !== \"undefined\" && window.RUNTIME_CONFIG)\n"
         + "    ? window.RUNTIME_CONFIG\n"
         + "    : {};\n\n"
