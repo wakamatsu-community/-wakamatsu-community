@@ -4,21 +4,28 @@ from __future__ import annotations
 
 import json
 import sys
-import urllib.parse
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-GAS_URL = "https://script.google.com/macros/s/REPLACE_WITH_YOUR_DEPLOYMENT_ID/exec"
+GAS_WEB_APP_URL = "https://script.google.com/macros/s/REPLACE_WITH_YOUR_DEPLOYMENT_ID/exec"
 OUTPUT_PATH = Path(__file__).resolve().parent / "Docs" / "events.json"
 
 
 def fetch_events_from_gas() -> list[dict]:
-    query = urllib.parse.urlencode({"type": "calendar_events"})
-    url = f"{GAS_URL}?{query}"
+    url = f"{GAS_WEB_APP_URL}?action=getEvents"
+    print(f"[INFO] アクセスURL: {url}")
 
-    with urllib.request.urlopen(url, timeout=20) as response:
-        body = response.read().decode("utf-8")
+    try:
+        with urllib.request.urlopen(url, timeout=20) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        print(f"[ERROR] HTTPエラー {exc.code}: {url}", file=sys.stderr)
+        raise
+    except Exception as exc:
+        print(f"[ERROR] 接続失敗 ({url}): {exc}", file=sys.stderr)
+        raise
 
     payload = json.loads(body)
     if isinstance(payload, list):
