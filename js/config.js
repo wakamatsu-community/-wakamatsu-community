@@ -5,7 +5,7 @@
 // ホームページ本体のコードは変更不要です。
 // ====================================================================
 
-import { RUNTIME_CONFIG } from "./runtime-config.js";
+import { RUNTIME_CONFIG } from "./runtime-config.js?v=20260618";
 
 export const SITE_CONFIG = {
 

@@ -1,4 +1,4 @@
-import { RUNTIME_CONFIG } from "./runtime-config.js";
+import { RUNTIME_CONFIG } from "./runtime-config.js?v=20260618";
 
 export const GAS_URL = "";
 
