@@ -148,6 +148,55 @@
                     <p id="admin-recurring-event-status" class="note" aria-live="polite"></p>
                 </form>
 
+                <div class="card sub-card" id="admin-town-events-list-section">
+                    <h3>登録済み町内行事一覧（修正・削除）</h3>
+                    <p class="note">行の「修正」ボタンで内容を変更、「削除」ボタンで行を削除できます。</p>
+                    <button class="button" type="button" id="admin-town-events-reload">一覧を読み込む</button>
+                    <p id="admin-town-events-list-status" class="note" aria-live="polite"></p>
+                    <div class="table-scroll">
+                        <table class="table-like" id="admin-town-events-table">
+                            <thead>
+                                <tr>
+                                    <th>タイトル</th>
+                                    <th>開始日時</th>
+                                    <th>場所</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="admin-town-events-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="admin-town-event-edit-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+                    <section class="modal-card">
+                        <h2>町内行事を修正</h2>
+                        <form id="admin-town-event-edit-form" class="inline-form">
+                            <input type="hidden" name="eventId">
+                            <label>イベント名
+                                <input name="title" type="text" required>
+                            </label>
+                            <label>開始日時
+                                <input name="start" type="datetime-local" required>
+                            </label>
+                            <label>終了日時
+                                <input name="end" type="datetime-local">
+                            </label>
+                            <label>場所
+                                <input name="place" type="text">
+                            </label>
+                            <label>補足説明
+                                <textarea name="description"></textarea>
+                            </label>
+                            <div class="button-row modal-button-row">
+                                <button class="button" type="submit">保存</button>
+                                <button class="button" type="button" id="admin-town-event-edit-close">キャンセル</button>
+                            </div>
+                            <p id="admin-town-event-edit-status" class="note" aria-live="polite"></p>
+                        </form>
+                    </section>
+                </div>
+
             </section>
 
             <section class="card">

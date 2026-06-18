@@ -1315,4 +1315,157 @@ export function initAdminCommunityForms(config) {
     } catch {
         // テストモードではフォーム初期化失敗を無視する。
     }
+
+    try {
+        bindTownEventListSection();
+    } catch {
+        // テストモードでは一覧初期化失敗を無視する。
+    }
+}
+
+// ============================================================
+// 町内行事一覧・削除・修正
+// ============================================================
+function toDatetimeLocalFromIso(iso) {
+    if (!iso) { return ""; }
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) { return ""; }
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatDateShort(iso) {
+    if (!iso) { return ""; }
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) { return iso; }
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function bindTownEventListSection() {
+    const reloadBtn  = document.getElementById("admin-town-events-reload");
+    const tbody      = document.getElementById("admin-town-events-tbody");
+    const listStatus = document.getElementById("admin-town-events-list-status");
+    const modal      = document.getElementById("admin-town-event-edit-modal");
+    const editForm   = document.getElementById("admin-town-event-edit-form");
+    const editStatus = document.getElementById("admin-town-event-edit-status");
+    const editClose  = document.getElementById("admin-town-event-edit-close");
+
+    if (!reloadBtn || !tbody) { return; }
+
+    let currentEvents = [];
+
+    async function loadList() {
+        listStatus.textContent = "読み込み中...";
+        try {
+            const res = await gasGet({ type: "getTownEvents" });
+            const rows = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
+            currentEvents = rows;
+            renderTable(rows);
+            listStatus.textContent = `${rows.length}件の行事を表示しています。`;
+        } catch (err) {
+            listStatus.textContent = `【取得失敗】${err instanceof Error ? err.message : String(err)}`;
+        }
+    }
+
+    function renderTable(rows) {
+        tbody.innerHTML = "";
+        if (rows.length === 0) {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `<td colspan="4" style="text-align:center">登録されている行事はありません</td>`;
+            tbody.appendChild(tr);
+            return;
+        }
+        rows.forEach((ev) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td>${ev.title || ""}</td>
+                <td>${formatDateShort(ev.start)}</td>
+                <td>${ev.place || ""}</td>
+                <td>
+                    <button class="button" type="button" data-action="edit-town-event" data-id="${ev.eventId}">修正</button>
+                    <button class="button danger" type="button" data-action="delete-town-event" data-id="${ev.eventId}" data-title="${ev.title || ""}">削除</button>
+                </td>`;
+            tbody.appendChild(tr);
+        });
+    }
+
+    reloadBtn.addEventListener("click", loadList);
+
+    tbody.addEventListener("click", async (e) => {
+        const btn = e.target.closest("button[data-action]");
+        if (!btn) { return; }
+        const action  = btn.dataset.action;
+        const eventId = btn.dataset.id;
+
+        if (action === "delete-town-event") {
+            const title = btn.dataset.title || eventId;
+            if (!confirm(`「${title}」を削除してよいですか？`)) { return; }
+            listStatus.textContent = "削除中...";
+            try {
+                const res = await gasPost({ action: "deleteTownEvent", eventId });
+                const ok = res?.data?.success ?? res?.success ?? res?.ok;
+                if (!ok) { throw new Error(String(res?.data?.error || res?.error || "削除失敗")); }
+                listStatus.textContent = `削除しました: ${title}`;
+                await loadList();
+            } catch (err) {
+                listStatus.textContent = `【削除失敗】${err instanceof Error ? err.message : String(err)}`;
+            }
+        }
+
+        if (action === "edit-town-event") {
+            const ev = currentEvents.find((r) => r.eventId === eventId);
+            if (!ev || !modal || !editForm) { return; }
+            editForm.querySelector('[name="eventId"]').value  = ev.eventId;
+            editForm.querySelector('[name="title"]').value    = ev.title || "";
+            editForm.querySelector('[name="start"]').value    = toDatetimeLocalFromIso(ev.start);
+            editForm.querySelector('[name="end"]').value      = toDatetimeLocalFromIso(ev.end);
+            editForm.querySelector('[name="place"]').value    = ev.place || "";
+            editForm.querySelector('[name="description"]').value = ev.description || "";
+            editStatus.textContent = "";
+            modal.classList.remove("hidden");
+            document.body.style.overflow = "hidden";
+        }
+    });
+
+    if (editClose && modal) {
+        editClose.addEventListener("click", () => {
+            modal.classList.add("hidden");
+            document.body.style.overflow = "";
+        });
+        modal.addEventListener("click", (e) => {
+            if (e.target === modal) {
+                modal.classList.add("hidden");
+                document.body.style.overflow = "";
+            }
+        });
+    }
+
+    if (editForm) {
+        editForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const fd = new FormData(editForm);
+            const payload = {
+                action: "updateTownEvent",
+                eventId:     String(fd.get("eventId") || ""),
+                title:       String(fd.get("title") || "").trim(),
+                start:       String(fd.get("start") || ""),
+                end:         String(fd.get("end") || ""),
+                place:       String(fd.get("place") || "").trim(),
+                description: String(fd.get("description") || "").trim()
+            };
+            editStatus.textContent = "保存中...";
+            try {
+                const res = await gasPost(payload);
+                const ok = res?.data?.success ?? res?.success ?? res?.ok;
+                if (!ok) { throw new Error(String(res?.data?.error || res?.error || "更新失敗")); }
+                editStatus.textContent = "保存しました。";
+                modal.classList.add("hidden");
+                document.body.style.overflow = "";
+                await loadList();
+            } catch (err) {
+                editStatus.textContent = `【保存失敗】${err instanceof Error ? err.message : String(err)}`;
+            }
+        });
+    }
 }

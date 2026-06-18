@@ -119,9 +119,10 @@ function doGet(e) {
             build: API_BUILD,
             method: "GET",
             hasDoPost: true,
-            supportedGet: ["health","login","getOpinions","getEvents","calendar_events","getGallery","getEquipment","equipment_status"],
+            supportedGet: ["health","login","getOpinions","getEvents","getTownEvents","calendar_events","getGallery","getEquipment","equipment_status"],
             supportedPost: [
-              "health","login","addOpinion","addTownEvent","addEvent","addRecurringEvent","joinEvent",
+              "health","login","addOpinion","addTownEvent","updateTownEvent","deleteTownEvent",
+              "addEvent","addRecurringEvent","joinEvent",
               "reserveEquipment","uploadPhoto","addPeople","addEquipmentMaster",
               "uploadDocument"
             ]
@@ -133,6 +134,8 @@ function doGet(e) {
         return jsonResponse_({ ok: true, action: action, data: getOpinions_() });
       case "getEvents":
         return jsonResponse_({ ok: true, action: action, data: getEvents_() });
+      case "getTownEvents":
+        return jsonResponse_({ ok: true, action: action, data: getTownEvents_() });
       case "calendar_events":
         return jsonResponse_({ ok: true, action: action, data: getCalendarEventsForFrontend_() });
       case "getGallery":
@@ -180,6 +183,10 @@ function doPost(e) {
         return jsonResponse_({ ok: true, action: action, data: addOpinion_(body) });
       case "addTownEvent":
         return jsonResponse_({ ok: true, action: action, data: addTownEvent_(body) });
+      case "updateTownEvent":
+        return jsonResponse_({ ok: true, action: action, data: updateTownEvent_(body) });
+      case "deleteTownEvent":
+        return jsonResponse_({ ok: true, action: action, data: deleteTownEvent_(body) });
       case "addEvent":
         return jsonResponse_({ ok: true, action: action, data: addEvent_(body) });
       case "addRecurringEvent":
@@ -202,7 +209,8 @@ function doPost(e) {
           error: "未対応のactionです。",
           receivedAction: action,
           supportedActions: [
-            "login","addOpinion","addTownEvent","addEvent","addRecurringEvent","joinEvent",
+            "login","addOpinion","addTownEvent","updateTownEvent","deleteTownEvent",
+            "addEvent","addRecurringEvent","joinEvent",
             "reserveEquipment","uploadPhoto","addPeople","addEquipmentMaster",
             "uploadDocument"
           ]
@@ -381,6 +389,98 @@ function addOpinion_(params) {
     // 投稿ID, 日時, 名前, カテゴリ, 内容, 返信状態, 管理ステータス
     sheet.appendRow([postId, postedAt, String(params.name||""), String(params.category||""), String(params.content||""), "未対応", "公開中"]);
     return { success: true, message: "投稿が完了しました" };
+  } catch (err) {
+    return { success: false, error: String(err && err.message || err) };
+  }
+}
+
+function getTownEvents_() {
+  try {
+    var rows = readSheetAsObjects_("町内行事予定");
+    return rows.map(function(row) {
+      return {
+        eventId:     String(row["イベントID"]     || ""),
+        title:       String(row["タイトル"]       || ""),
+        start:       toIsoTextOrOriginal_(row["開始日時"]),
+        end:         toIsoTextOrOriginal_(row["終了日時"]),
+        place:       String(row["場所"]         || ""),
+        creator:     String(row["企画者"]       || ""),
+        description: String(row["説明"]         || "")
+      };
+    }).filter(function(r) { return !!r.eventId; });
+  } catch (err) {
+    return { error: String(err && err.message || err) };
+  }
+}
+
+function deleteTownEvent_(params) {
+  try {
+    var eventId = String(params.eventId || "").trim();
+    if (!eventId) { throw new Error("eventId は必須です。"); }
+
+    var spreadsheet = getLedgerSpreadsheet();
+    var sheet = getOrCreateSheet_(spreadsheet, "町内行事予定");
+    var values = sheet.getDataRange().getValues();
+    var headers = values[0].map(function(h) { return String(h || "").trim(); });
+    var idCol = headers.indexOf("イベントID");
+    if (idCol < 0) { throw new Error("イベントID列が見つかりません。"); }
+
+    for (var i = values.length - 1; i >= 1; i--) {
+      if (String(values[i][idCol] || "").trim() === eventId) {
+        sheet.deleteRow(i + 1);
+        return { success: true, message: "削除しました: " + eventId };
+      }
+    }
+    throw new Error("对象のイベントIDが見つかりません: " + eventId);
+  } catch (err) {
+    return { success: false, error: String(err && err.message || err) };
+  }
+}
+
+function updateTownEvent_(params) {
+  try {
+    var eventId = String(params.eventId || "").trim();
+    if (!eventId) { throw new Error("eventId は必須です。"); }
+
+    var spreadsheet = getLedgerSpreadsheet();
+    var sheet  = getOrCreateSheet_(spreadsheet, "町内行事予定");
+    var values = sheet.getDataRange().getValues();
+    var headers = values[0].map(function(h) { return String(h || "").trim(); });
+    var idCol = headers.indexOf("イベントID");
+    if (idCol < 0) { throw new Error("イベントID列が見つかりません。"); }
+
+    var rowIndex = -1;
+    for (var i = 1; i < values.length; i++) {
+      if (String(values[i][idCol] || "").trim() === eventId) {
+        rowIndex = i + 1; // 1-based
+        break;
+      }
+    }
+    if (rowIndex < 0) { throw new Error("对象イベントIDが見つかりません: " + eventId); }
+
+    var start = parseDateOrThrow_(params.start, "start");
+    var end   = parseDateOrNull_(params.end);
+    if (!end) { end = new Date(start.getTime() + 60 * 60 * 1000); }
+    if (end.getTime() <= start.getTime()) { throw new Error("end は start より後を指定してください。"); }
+
+    var fieldMap = {
+      "カレンダー予定ID": String(values[rowIndex - 1][headers.indexOf("カレンダー予定ID")] || ""),
+      "開始日時":    Utilities.formatDate(start, Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
+      "終了日時":    Utilities.formatDate(end,   Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
+      "タイトル":      String(params.title       || "").trim(),
+      "企画者":    String(params.creator     || "").trim(),
+      "場所":        String(params.place       || "").trim(),
+      "説明":        String(params.description || "").trim()
+    };
+
+    // 列順 (ヘッダー定義順): イベントID, カレンダー予定ID, 開始日時, 終了日時, タイトル, 企画者, 場所, 説明
+    var newRow = headers.map(function(h, colIdx) {
+      if (h === "イベントID") { return eventId; }
+      return Object.prototype.hasOwnProperty.call(fieldMap, h) ? fieldMap[h] : String(values[rowIndex - 1][colIdx] || "");
+    });
+    sheet.getRange(rowIndex, 1, 1, newRow.length).setValues([newRow]);
+
+    return { success: true, message: "更新しました: " + eventId };
   } catch (err) {
     return { success: false, error: String(err && err.message || err) };
   }
