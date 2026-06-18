@@ -1,4 +1,6 @@
-const STORAGE_KEY = "wakamatsu_equipment_reservations_v2";
+import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
+
+const STATUS_CACHE_KEY = "wakamatsu_equipment_status_v1";
 
 function normalize(text) {
     return String(text || "").toLowerCase().replace(/\s+/g, "");
@@ -69,9 +71,6 @@ function toFlatReservationItems(sourceList) {
         if (entry.items && Array.isArray(entry.items)) {
             return entry.items.map((item) => ({
                 recordId: entry.id,
-                name: entry.name,
-                phone: entry.phone,
-                group: entry.group,
                 createdAt: entry.createdAt,
                 equipmentId: item.equipmentId,
                 equipmentLabel: item.equipmentLabel,
@@ -83,9 +82,6 @@ function toFlatReservationItems(sourceList) {
 
         return [{
             recordId: entry.id || `R-${Date.now()}`,
-            name: entry.name || "",
-            phone: entry.phone || "",
-            group: entry.group || "",
             createdAt: entry.createdAt || new Date().toISOString(),
             equipmentId: entry.equipmentId,
             equipmentLabel: entry.equipmentLabel,
@@ -118,63 +114,88 @@ async function loadEquipmentItems(config) {
 }
 
 async function loadReservationItems(config) {
-    const rows = await fetchSheetRows(config?.equipment?.sheets?.reservationSheetUrl);
-    if (rows) {
+    try {
+        const payload = await gasGet({ type: "equipment_status" });
+        const rows = Array.isArray(payload)
+            ? payload
+            : Array.isArray(payload?.items)
+                ? payload.items
+                : Array.isArray(payload?.data)
+                    ? payload.data
+                    : [];
+
         const parsed = rows
-            .map((row) => {
-                const c = row.c || [];
-                return {
-                    recordId: String(c[0]?.v || `R-${Date.now()}`),
-                    name: String(c[1]?.v || ""),
-                    phone: String(c[2]?.v || ""),
-                    group: String(c[3]?.v || ""),
-                    equipmentId: String(c[4]?.v || ""),
-                    equipmentLabel: String(c[5]?.v || ""),
-                    quantity: Number(c[6]?.v || 1),
-                    loanDate: String(c[7]?.v || ""),
-                    returnDate: String(c[8]?.v || ""),
-                    createdAt: String(c[9]?.v || new Date().toISOString())
-                };
-            })
-            .filter((item) => item.equipmentId && item.loanDate && item.returnDate);
+            .map((row, index) => ({
+                recordId: String(row?.recordId || row?.id || `R-${Date.now()}-${index}`),
+                equipmentId: String(row?.equipmentId || ""),
+                equipmentLabel: String(row?.equipmentLabel || row?.equipment || ""),
+                quantity: Number(row?.quantity || 1),
+                loanDate: String(row?.loanDate || row?.loan || ""),
+                returnDate: String(row?.returnDate || row?.return || ""),
+                createdAt: String(row?.createdAt || new Date().toISOString())
+            }))
+            .filter((item) => item.equipmentLabel && item.loanDate && item.returnDate);
 
         if (parsed.length > 0) {
+            localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify(parsed));
             return parsed;
         }
+    } catch {
+        // 通信失敗時は安全データのみのローカルキャッシュへフォールバック
     }
 
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const saved = localStorage.getItem(STATUS_CACHE_KEY);
     if (saved) {
         try {
             return JSON.parse(saved);
         } catch {
-            localStorage.removeItem(STORAGE_KEY);
+            localStorage.removeItem(STATUS_CACHE_KEY);
         }
     }
 
     const mockFlat = toFlatReservationItems(config?.equipment?.mockReservations || []);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(mockFlat));
+    localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify(mockFlat));
     return mockFlat;
 }
 
 function saveReservationItemsLocal(items) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify(items));
 }
 
-async function submitToSheets(config, payload) {
-    const endpoint = config?.equipment?.sheets?.submitEndpoint;
-    if (!isConfigured(endpoint)) {
-        return false;
-    }
+async function submitToGas(payload) {
+    const requestUrl = getGasUrl();
     try {
-        const res = await fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-        });
-        return res.ok;
-    } catch {
-        return false;
+        const response = await gasPost(payload);
+        const hasBusinessError = response && (
+            response.ok === false
+            || response.success === false
+            || response.result === false
+            || response.isError === true
+            || Boolean(response.error)
+        );
+
+        if (hasBusinessError) {
+            return {
+                ok: false,
+                url: String(response?._requestUrl || requestUrl),
+                status: Number(response?._httpStatus || 200),
+                error: String(response?.error || response?.message || "GASから失敗応答が返されました。")
+            };
+        }
+
+        return {
+            ok: true,
+            url: String(response?._requestUrl || requestUrl),
+            status: Number(response?._httpStatus || 200),
+            error: ""
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            url: requestUrl,
+            status: 0,
+            error: String(error && error.message || error)
+        };
     }
 }
 
@@ -502,9 +523,6 @@ export async function initEquipmentPage(config) {
 
         const flatRows = pendingItems.map((item) => ({
             recordId,
-            name,
-            phone,
-            group,
             equipmentId: item.equipmentId,
             equipmentLabel: item.equipmentLabel,
             quantity: item.quantity,
@@ -513,21 +531,29 @@ export async function initEquipmentPage(config) {
             createdAt
         }));
 
-        const posted = await submitToSheets(config, {
+        const posted = await submitToGas({
+            action: "reserveEquipment",
             type: "equipmentReservation",
             recordId,
-            name,
+            applicant: name,
             phone,
             group,
-            items: pendingItems
+            items: pendingItems.map((item) => ({
+                equipment: item.equipmentLabel,
+                equipmentId: item.equipmentId,
+                quantity: item.quantity,
+                loanDate: item.loanDate,
+                returnDate: item.returnDate
+            })),
+            createdAt
         });
 
         reservationItems = [...reservationItems, ...flatRows];
-        if (!posted) {
+        if (!posted.ok) {
             saveReservationItemsLocal(reservationItems);
-            formStatus.textContent = `予約を登録しました（ローカル保存: ${itemListToLabel(pendingItems)}）。`;
+            formStatus.textContent = `【通信失敗】URL: ${posted.url} | エラー内容: HTTP=${posted.status || "N/A"} / ${posted.error}`;
         } else {
-            formStatus.textContent = `予約をGoogle Sheetsへ登録しました（${itemListToLabel(pendingItems)}）。`;
+            formStatus.textContent = `送信成功: URL=${posted.url} | HTTP=${posted.status} | ${itemListToLabel(pendingItems)}`;
         }
 
         pendingItems = [];
@@ -564,7 +590,7 @@ export async function initAdminReturnAlerts(config) {
         dueItems.forEach((item) => {
             const p = document.createElement("p");
             p.className = "admin-alert-item";
-            p.textContent = `予約ID ${item.id}（${item.equipmentLabel} x${item.quantity}）の返納日が来ました。`;
+            p.textContent = `予約ID ${item.recordId}（${item.equipmentLabel} x${item.quantity}）の返納日が来ました。`;
             alertsRoot.appendChild(p);
         });
     }

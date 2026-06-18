@@ -1,5 +1,5 @@
-import { RUNTIME_CONFIG } from "./runtime-config.js";
-import { getCurrentUser, saveCalendarEventDraft } from "./firebase.js";
+import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
+import { loadAllManagedEvents } from "./community-admin.js";
 
 const LOCAL_ADDED_EVENTS_KEY = "wakamatsu_calendar_added_events_v1";
 
@@ -43,56 +43,107 @@ function saveLocalAddedEvents(events) {
     localStorage.setItem(LOCAL_ADDED_EVENTS_KEY, JSON.stringify(events));
 }
 
-function buildGoogleCalendarUrl() {
-    const apiKey = RUNTIME_CONFIG?.google?.calendarApiKey || "";
-    const calendarId = RUNTIME_CONFIG?.google?.calendarId || "";
-    if (!apiKey || !calendarId) {
-        return "";
-    }
+function normalizeGasCalendarEvents(payload) {
+    const rows = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.events)
+            ? payload.events
+            : Array.isArray(payload?.data)
+                ? payload.data
+                : [];
 
-    const params = new URLSearchParams({
-        key: apiKey,
-        singleEvents: "true",
-        orderBy: "startTime",
-        maxResults: "250",
-        timeMin: new Date(Date.now() - 1000 * 60 * 60 * 24 * 90).toISOString(),
-        timeMax: new Date(Date.now() + 1000 * 60 * 60 * 24 * 365).toISOString()
-    });
-
-    return `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
+    return rows.map((item, index) => {
+        const startValue = item?.start || item?.startDateTime || item?.startDate || "";
+        const endValue = item?.end || item?.endDateTime || item?.endDate || "";
+        const allDay = Boolean(item?.allDay || (String(startValue).length === 10 && !String(startValue).includes("T")));
+        return {
+            id: String(item?.id || `gas-${index}-${Date.now()}`),
+            title: item?.title || item?.summary || "(タイトル未設定)",
+            start: startValue,
+            end: endValue,
+            allDay,
+            backgroundColor: "#247246",
+            borderColor: "#247246",
+            extendedProps: {
+                location: item?.location || "",
+                description: item?.description || "",
+                source: "gas"
+            }
+        };
+    }).filter((event) => event.start);
 }
 
-async function fetchGoogleCalendarEvents() {
-    const url = buildGoogleCalendarUrl();
-    if (!url) {
+async function fetchCalendarEventsFromGas() {
+    try {
+        const payload = await gasGet({ type: "calendar_events" });
+        return normalizeGasCalendarEvents(payload);
+    } catch {
         return [];
     }
+}
 
+function parseManagedScheduleToEvent(event, index = 0) {
+    const explicitStart = String(event?.start || "");
+    const explicitEnd = String(event?.end || "");
+    let start = explicitStart;
+    let end = explicitEnd;
+    let allDay = !String(explicitStart).includes("T");
+
+    if (!start) {
+        const label = String(event?.scheduleLabel || "");
+        const dateMatch = label.match(/(\d{4}-\d{2}-\d{2})/);
+        if (!dateMatch) {
+            return null;
+        }
+
+        const timeMatches = [...label.matchAll(/(\d{1,2}):(\d{2})/g)];
+        const date = dateMatch[1];
+        start = date;
+        end = "";
+        allDay = true;
+
+        if (timeMatches.length > 0) {
+            const [startHour, startMinute] = timeMatches[0].slice(1, 3);
+            start = `${date}T${startHour.padStart(2, "0")}:${startMinute}:00`;
+            allDay = false;
+        }
+
+        if (timeMatches.length > 1) {
+            const [endHour, endMinute] = timeMatches[1].slice(1, 3);
+            end = `${date}T${endHour.padStart(2, "0")}:${endMinute}:00`;
+        }
+    }
+
+    if (!start) {
+        return null;
+    }
+
+    return {
+        id: String(event?.id || `managed-${index}-${Date.now()}`),
+        title: String(event?.title || "(タイトル未設定)"),
+        start,
+        end,
+        allDay,
+        backgroundColor: "#ec7b3a",
+        borderColor: "#ec7b3a",
+        extendedProps: {
+            location: String(event?.place || ""),
+            description: String(event?.description || ""),
+            source: "managed"
+        }
+    };
+}
+
+async function fetchManagedEventsForCalendar(config) {
     try {
-        const response = await fetch(url);
-        if (!response.ok) {
+        const managed = await loadAllManagedEvents(config);
+        if (!Array.isArray(managed)) {
             return [];
         }
-        const payload = await response.json();
-        const items = Array.isArray(payload?.items) ? payload.items : [];
 
-        return items.map((item) => {
-            const isAllDay = Boolean(item?.start?.date && !item?.start?.dateTime);
-            return {
-                id: item.id,
-                title: item.summary || "(タイトル未設定)",
-                start: item?.start?.dateTime || item?.start?.date,
-                end: item?.end?.dateTime || item?.end?.date,
-                allDay: isAllDay,
-                backgroundColor: "#247246",
-                borderColor: "#247246",
-                extendedProps: {
-                    location: item.location || "",
-                    description: item.description || "",
-                    source: "google"
-                }
-            };
-        });
+        return managed
+            .map((event, index) => parseManagedScheduleToEvent(event, index))
+            .filter(Boolean);
     } catch {
         return [];
     }
@@ -156,27 +207,60 @@ async function saveTownCalendarEvent(formData) {
         description
     };
 
-    const localEvents = loadLocalAddedEvents();
-    saveLocalAddedEvents([...localEvents, event]);
+    const requestUrl = getGasUrl();
 
-    const cloudSaved = await saveCalendarEventDraft({
-        title,
-        start: event.start,
-        end: event.end,
-        allDay,
-        location,
-        description
-    });
+    try {
+        const response = await gasPost({
+            action: "addEvent",
+            title,
+            start: event.start,
+            end: event.end || event.start,
+            place: location,
+            description,
+            creator: "",
+            minParticipants: 0,
+            maxParticipants: 0,
+            allDay,
+            createdAt: new Date().toISOString()
+        });
 
-    if (cloudSaved.ok) {
-        return { ok: true, message: "町内会カレンダー予定を登録しました（Firestoreにも保存済み）。" };
+        const hasBusinessError = response && (
+            response.ok === false
+            || response.success === false
+            || response.result === false
+            || response.isError === true
+            || Boolean(response.error)
+        );
+
+        if (hasBusinessError) {
+            const errorText = String(response?.error || response?.message || "GASから失敗応答が返されました。");
+            const failUrl = String(response?._requestUrl || requestUrl);
+            const failStatus = Number(response?._httpStatus || 0);
+            return {
+                ok: false,
+                message: `【通信失敗】URL: ${failUrl} | エラー内容: HTTP=${failStatus || "N/A"} / ${errorText}`,
+                url: failUrl,
+                httpStatus: failStatus
+            };
+        }
+
+        const successUrl = String(response?._requestUrl || requestUrl);
+        const successStatus = Number(response?._httpStatus || 200);
+        return {
+            ok: true,
+            message: `送信成功 URL: ${successUrl} | HTTP: ${successStatus}`,
+            url: successUrl,
+            httpStatus: successStatus
+        };
+    } catch (error) {
+        const errorText = String(error && error.message || error || "不明なエラー");
+        return {
+            ok: false,
+            message: `【通信失敗】URL: ${requestUrl} | エラー内容: ${errorText}`,
+            url: requestUrl,
+            httpStatus: 0
+        };
     }
-
-    if (cloudSaved.reason === "not-signed-in") {
-        return { ok: true, message: "町内会カレンダー予定を登録しました（ローカル保存）。管理者ログイン中はFirestoreにも保存されます。" };
-    }
-
-    return { ok: true, message: "町内会カレンダー予定を登録しました（ローカル保存）。" };
 }
 
 function setCalendarConnectionStatus(message) {
@@ -186,7 +270,7 @@ function setCalendarConnectionStatus(message) {
     }
 }
 
-export async function initCalendarPage() {
+export async function initCalendarPage(config = {}) {
     const calendarRoot = document.getElementById("custom-calendar");
     if (!calendarRoot) {
         return;
@@ -217,16 +301,39 @@ export async function initCalendarPage() {
 
     calendar.render();
 
-    const googleEvents = await fetchGoogleCalendarEvents();
-    const localEvents = loadLocalAddedEvents().map(toLocalCalendarEvent);
+    const loadingFallbackTimer = setTimeout(() => {
+        setCalendarConnectionStatus("現在予定はありません");
+    }, 3000);
 
-    googleEvents.forEach((event) => calendar.addEvent(event));
+    let gasEvents = [];
+    let managedEvents = [];
+    let localEvents = [];
+
+    try {
+        const [fetchedGasEvents, fetchedManagedEvents] = await Promise.all([
+            fetchCalendarEventsFromGas(),
+            fetchManagedEventsForCalendar(config)
+        ]);
+        gasEvents = Array.isArray(fetchedGasEvents) ? fetchedGasEvents : [];
+        managedEvents = Array.isArray(fetchedManagedEvents) ? fetchedManagedEvents : [];
+        localEvents = loadLocalAddedEvents().map(toLocalCalendarEvent);
+    } catch {
+        gasEvents = [];
+        managedEvents = [];
+        localEvents = [];
+    }
+
+    clearTimeout(loadingFallbackTimer);
+
+    gasEvents.forEach((event) => calendar.addEvent(event));
+    managedEvents.forEach((event) => calendar.addEvent(event));
     localEvents.forEach((event) => calendar.addEvent(event));
 
-    if (googleEvents.length > 0) {
-        setCalendarConnectionStatus("Google Calendar APIから予定を取得しました。オレンジ色はサイトから追加した予定です。");
+    const totalEvents = gasEvents.length + managedEvents.length + localEvents.length;
+    if (totalEvents > 0) {
+        setCalendarConnectionStatus(`予定を${totalEvents}件表示中です。`);
     } else {
-        setCalendarConnectionStatus("Google Calendar APIの取得結果が0件、または環境変数未設定です。`GOOGLE_CALENDAR_API_KEY` と `GOOGLE_CALENDAR_ID` を確認してください。");
+        setCalendarConnectionStatus("現在予定はありません");
     }
 }
 
@@ -237,15 +344,16 @@ export function initAdminCalendarForm() {
         return;
     }
 
-    const loginState = getCurrentUser();
-    if (!loginState) {
-        status.textContent = "管理者ログインなしでも登録はできますが、ローカル保存になります。";
-    }
+    status.textContent = "登録内容はGASへ送信されます。";
+    status.style.color = "";
+    status.style.fontWeight = "";
 
     form.addEventListener("submit", async (event) => {
         event.preventDefault();
         const result = await saveTownCalendarEvent(new FormData(form));
         status.textContent = result.message;
+        status.style.color = result.ok ? "" : "#c62828";
+        status.style.fontWeight = result.ok ? "" : "700";
         if (result.ok) {
             form.reset();
             const startInput = form.querySelector('input[name="start"]');

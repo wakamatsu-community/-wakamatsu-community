@@ -1,9 +1,11 @@
 /**
  * 写真アルバム表示モジュール
  *
- * 表示元は Google Drive フォルダを正とし、
- * listPhotosEndpoint が未設定の場合のみ mockPhotos を使用します。
+ * 表示元は GAS(getGallery) の写真メタデータを正とし、
+ * 取得失敗時のみ mockPhotos を使用します。
  */
+
+import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
 
 function createDriveFileUrls(file) {
     const fileId = file.id || "";
@@ -44,25 +46,31 @@ function toDriveFolderUrl(folderId) {
 }
 
 async function getDrivePhotos(config, folderId) {
-    const endpoint = config?.gallery?.drive?.listPhotosEndpoint;
-    if (!isConfigured(endpoint) || !folderId) {
+    if (!folderId) {
         return null;
     }
 
     try {
-        const res = await fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                action: "listPhotos",
-                folderId
-            })
-        });
-        if (!res.ok) {
-            return [];
-        }
-        const data = await res.json();
-        return normalizeDriveFiles(data);
+        const payload = await gasGet({ action: "getGallery" });
+        const rows = Array.isArray(payload)
+            ? payload
+            : Array.isArray(payload?.data)
+                ? payload.data
+                : [];
+
+        const filtered = rows.filter((row) => {
+            const album = String(row?.["アルバム名/カテゴリ"] || "").trim();
+            return album === String(folderId).trim();
+        }).map((row) => ({
+            id: String(row?.["ドライブのファイルID"] || ""),
+            title: String(row?.["写真ID"] || "写真"),
+            comment: String(row?.["コメント/説明"] || ""),
+            viewUrl: String(row?.["画像URL"] || ""),
+            downloadUrl: String(row?.["画像URL"] || ""),
+            thumbnailUrl: String(row?.["画像URL"] || "")
+        }));
+
+        return normalizeDriveFiles({ files: filtered });
     } catch {
         return [];
     }
@@ -191,61 +199,63 @@ function createAlbumCard(album, photos, sourceLabel) {
     return article;
 }
 
-function isConfigured(url) {
-    return Boolean(url && !url.includes("sample-"));
-}
-
-async function createDriveFolder(config, folderName) {
-    const endpoint = config?.gallery?.drive?.createFolderEndpoint;
-    if (!isConfigured(endpoint)) {
-        return null;
-    }
-
-    try {
-        const res = await fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                action: "createFolder",
-                folderName,
-                parentFolderId: config?.gallery?.drive?.rootFolderId || ""
-            })
-        });
-        if (!res.ok) {
-            return null;
-        }
-        const data = await res.json();
-        return data?.folderId || null;
-    } catch {
-        return null;
-    }
-}
-
 async function uploadPhotosToDrive(config, payload) {
-    const endpoint = config?.gallery?.drive?.uploadEndpoint;
-    if (!isConfigured(endpoint)) {
-        return false;
-    }
+    const requestUrl = getGasUrl();
 
     try {
-        const formData = new FormData();
-        formData.append("action", "uploadPhotos");
-        formData.append("folderId", payload.folderId);
-        formData.append("uploaderName", payload.uploaderName);
-        formData.append("comment", payload.comment);
+        let last = null;
+        for (const file of payload.files) {
+            const fileData = await fileToDataUrl(file);
+            last = await gasPost({
+                action: "uploadPhoto",
+                fileName: file.name,
+                mimeType: file.type || "image/jpeg",
+                photoData: fileData,
+                uploaderName: payload.uploaderName,
+                comment: payload.comment,
+                album: payload.folderId
+            });
 
-        payload.files.forEach((file) => {
-            formData.append("photos", file);
-        });
+            const hasBusinessError = last && (
+                last.ok === false
+                || last.success === false
+                || last.result === false
+                || last.isError === true
+                || Boolean(last.error)
+            );
+            if (hasBusinessError) {
+                return {
+                    ok: false,
+                    url: String(last?._requestUrl || requestUrl),
+                    status: Number(last?._httpStatus || 200),
+                    error: String(last?.error || last?.message || "GASから失敗応答が返されました。")
+                };
+            }
+        }
 
-        const res = await fetch(endpoint, {
-            method: "POST",
-            body: formData
-        });
-        return res.ok;
-    } catch {
-        return false;
+        return {
+            ok: true,
+            url: String(last?._requestUrl || requestUrl),
+            status: Number(last?._httpStatus || 200),
+            error: ""
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            url: requestUrl,
+            status: 0,
+            error: String(error && error.message || error)
+        };
     }
+}
+
+function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("ファイル読み込みに失敗しました。"));
+        reader.readAsDataURL(file);
+    });
 }
 
 function bindGalleryUploadForm(config, onUploaded) {
@@ -293,11 +303,7 @@ function bindGalleryUploadForm(config, onUploaded) {
                 status.textContent = "新規フォルダ名を入力してください。";
                 return;
             }
-            folderId = await createDriveFolder(config, folderName);
-            if (!folderId) {
-                status.textContent = "新規フォルダを作成できませんでした。Apps Script設定を確認してください。";
-                return;
-            }
+            folderId = folderName;
         } else {
             const matched = destinations.find((d) => d.id === destination);
             folderId = matched?.folderId || "";
@@ -314,12 +320,12 @@ function bindGalleryUploadForm(config, onUploaded) {
             files
         });
 
-        if (!uploaded) {
-            status.textContent = "Drive投稿に失敗しました。Apps Script（uploadEndpoint）の設定を確認してください。";
+        if (!uploaded.ok) {
+            status.textContent = `【通信失敗】URL: ${uploaded.url} | エラー内容: HTTP=${uploaded.status || "N/A"} / ${uploaded.error}`;
             return;
         }
 
-        status.textContent = "Google Driveへ写真を投稿しました。";
+        status.textContent = `送信成功: URL=${uploaded.url} | HTTP=${uploaded.status}`;
         form.reset();
         newFolderWrap.classList.add("hidden");
         newFolderInput.required = false;

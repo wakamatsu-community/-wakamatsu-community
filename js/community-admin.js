@@ -1,3 +1,5 @@
+import { gasPost, getGasUrl } from "./gas-api.js";
+
 const EVENTS_STORE_KEY = "wakamatsu_managed_events_v1";
 const EVENT_CATEGORIES_STORE_KEY = "wakamatsu_event_categories_v1";
 
@@ -23,35 +25,79 @@ async function fetchSheetRows(url) {
     }
 }
 
-async function postToEndpoint(endpoint, payload) {
-    if (!isConfigured(endpoint)) {
-        return false;
-    }
+async function postToGas(payload) {
+    const url = getGasUrl();
     try {
-        const res = await fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-        });
-        return res.ok;
-    } catch {
-        return false;
+        const response = await gasPost(payload);
+        const hasBusinessError = response && (
+            response.ok === false
+            || response.success === false
+            || response.result === false
+            || response.isError === true
+            || Boolean(response.error)
+        );
+
+        if (hasBusinessError) {
+            const errorMessage = String(response?.error || response?.message || "GASから失敗応答が返されました。");
+            return {
+                ok: false,
+                status: Number(response?._httpStatus || 200),
+                url: String(response?._requestUrl || url),
+                error: errorMessage,
+                response
+            };
+        }
+
+        return {
+            ok: true,
+            status: Number(response?._httpStatus || 200),
+            url: String(response?._requestUrl || url),
+            error: "",
+            response
+        };
+    } catch (error) {
+        const message = String(error && error.message || error);
+        const statusMatch = message.match(/(\d{3})/);
+        return {
+            ok: false,
+            status: statusMatch ? Number(statusMatch[1]) : 0,
+            url,
+            error: message,
+            response: null
+        };
     }
 }
 
-async function postFormToEndpoint(endpoint, formData) {
-    if (!isConfigured(endpoint)) {
-        return false;
-    }
+function stringifyPayloadForDebug(payload) {
     try {
-        const res = await fetch(endpoint, {
-            method: "POST",
-            body: formData
-        });
-        return res.ok;
+        const json = JSON.stringify(payload);
+        return json.length > 400 ? `${json.slice(0, 400)}...` : json;
     } catch {
-        return false;
+        return "<payload stringify failed>";
     }
+}
+
+function buildDebugStatus(action, payload, result) {
+    const payloadText = stringifyPayloadForDebug(payload);
+    if (result.ok) {
+        return `送信成功: action=${action}, URL=${result.url}, payload=${payloadText}, HTTP=${result.status}`;
+    }
+
+    return `【通信失敗】URL: ${result.url || getGasUrl()} | エラー内容: HTTP=${result.status || "N/A"} / ${result.error || "不明なエラー"}`;
+}
+
+function setStatusText(statusEl, text, isError = false) {
+    if (!statusEl) {
+        return;
+    }
+    statusEl.textContent = text;
+    statusEl.style.color = isError ? "#c62828" : "";
+    statusEl.style.fontWeight = isError ? "700" : "";
+}
+
+function setCommFailureStatus(statusEl, result) {
+    const text = `【通信失敗】URL: ${result?.url || getGasUrl()} | エラー内容: HTTP=${result?.status || "N/A"} / ${result?.error || "不明なエラー"}`;
+    setStatusText(statusEl, text, true);
 }
 
 function loadLocalEvents(config) {
@@ -394,10 +440,18 @@ function bindRecruitForm(config, events) {
             createdAt: new Date().toISOString()
         };
 
-        const ok = await postToEndpoint(config?.calendar?.management?.recruitSubmitEndpoint, payload);
-        status.textContent = ok
-            ? "参加希望を送信しました。"
-            : "参加希望を記録しました（Apps Script未設定のためローカル処理）。";
+        const result = await postToGas({
+            action: "joinEvent",
+            eventId: payload.eventId,
+            name: payload.name,
+            contact: payload.phone
+        });
+        if (result.ok) {
+            setStatusText(status, `参加希望を送信しました。URL: ${result.url} | HTTP: ${result.status}`);
+        } else {
+            setCommFailureStatus(status, result);
+            return;
+        }
         const selectedEventId = select.value;
         form.reset();
         if (select.options.length > 0) {
@@ -533,19 +587,26 @@ function bindCommunityCreateModal(config, events, onEventAdded) {
             return;
         }
 
-        const posted = await postToEndpoint(config?.calendar?.management?.submitEndpoint, {
-            type: "managedEvent",
-            event: newEvent
+        const posted = await postToGas({
+            action: "addEvent",
+            title: newEvent.title,
+            start: newEvent.start,
+            end: newEvent.end || newEvent.start,
+            place: newEvent.place,
+            description: newEvent.description,
+            minParticipants: Number(newEvent.minParticipants || 0),
+            maxParticipants: Number(newEvent.maxParticipants || 0)
         });
 
-        const local = loadLocalEvents(config);
-        saveLocalEvents([...local, newEvent]);
+        if (!posted.ok) {
+            setCommFailureStatus(status, posted);
+            return;
+        }
+
         events.push(newEvent);
         onEventAdded(newEvent);
 
-        status.textContent = posted
-            ? "コミニティ予定を登録しました。"
-            : "コミニティ予定を登録しました（Apps Script未設定のためローカル保存）。";
+        setStatusText(status, `コミニティ予定を登録しました。URL: ${posted.url} | HTTP: ${posted.status}`);
         form.reset();
         closeCommunityCreateModal();
     });
@@ -635,11 +696,18 @@ async function submitLearningAttendance(config, event, result, statusEl) {
         createdAt: new Date().toISOString()
     };
 
-    const ok = await postToEndpoint(config?.calendar?.management?.attendanceSubmitEndpoint, payload);
+    const resultResponse = await postToGas({
+        action: "joinEvent",
+        eventId: payload.eventId,
+        name: payload.result === "attend" ? "参加" : "不参加",
+        contact: payload.source
+    });
     if (statusEl) {
-        statusEl.textContent = ok
-            ? `「${result === "attend" ? "参加" : "不参加"}」を記録しました。`
-            : `「${result === "attend" ? "参加" : "不参加"}」を記録しました（Apps Script未設定のためローカル処理）。`;
+        if (resultResponse.ok) {
+            setStatusText(statusEl, `「${result === "attend" ? "参加" : "不参加"}」を記録しました。URL: ${resultResponse.url} | HTTP: ${resultResponse.status}`);
+        } else {
+            setCommFailureStatus(statusEl, resultResponse);
+        }
     }
 }
 
@@ -775,10 +843,17 @@ function bindAttendanceForm(config, events) {
             return;
         }
 
-        const ok = await postToEndpoint(config?.calendar?.management?.attendanceSubmitEndpoint, payload);
-        status.textContent = ok
-            ? "参加結果を記録しました。"
-            : "参加結果を記録しました（Apps Script未設定のためローカル処理）。";
+        const result = await postToGas({
+            action: "joinEvent",
+            eventId: payload.eventId,
+            name: payload.memberName,
+            contact: payload.memo || payload.result
+        });
+        if (!result.ok) {
+            setCommFailureStatus(status, result);
+            return;
+        }
+        setStatusText(status, `参加結果を記録しました。URL: ${result.url} | HTTP: ${result.status}`);
         form.reset();
         if (select.options.length > 0) {
             select.selectedIndex = 0;
@@ -786,39 +861,118 @@ function bindAttendanceForm(config, events) {
     });
 }
 
-async function handleEventFormSubmit(form, statusEl, type, config) {
-    const fd = new FormData(form);
-    const event = {
-        id: `EV-${Date.now()}`,
-        type,
-        title: String(fd.get("title") || "").trim(),
-        category: String(fd.get("category") || "").trim(),
-        scheduleLabel: String(fd.get("scheduleLabel") || "").trim(),
-        place: String(fd.get("place") || "").trim(),
-        recruitFormUrl: String(fd.get("recruitFormUrl") || "").trim(),
-        description: String(fd.get("description") || "").trim()
-    };
+async function handleEventFormSubmit(e, form, statusEl, type, config) {
+    e.preventDefault();
 
-    if (!event.title || !event.category || !event.scheduleLabel || !event.place) {
-        statusEl.textContent = "必須項目を入力してください。";
+    try {
+        const fd = new FormData(form);
+        const event = {
+            id: `EV-${Date.now()}`,
+            type,
+            title: String(fd.get("title") || "").trim(),
+            category: String(fd.get("category") || "").trim(),
+            scheduleLabel: String(fd.get("scheduleLabel") || "").trim(),
+            place: String(fd.get("place") || "").trim(),
+            recruitFormUrl: String(fd.get("recruitFormUrl") || "").trim(),
+            description: String(fd.get("description") || "").trim()
+        };
+
+        if (!event.title || !event.category || !event.scheduleLabel || !event.place) {
+            setStatusText(statusEl, "通信試行終了（入力不足）");
+            return;
+        }
+
+        const payload = {
+            action: "addEvent",
+            title: event.title,
+            start: event.start || event.scheduleLabel,
+            end: event.end || event.start || event.scheduleLabel,
+            place: event.place,
+            description: event.description
+        };
+        const result = await postToGas(payload);
+        if (!result.ok) {
+            setCommFailureStatus(statusEl, result);
+            return;
+        }
+        setStatusText(statusEl, buildDebugStatus(payload.action, payload, result));
+    } catch {
+        setCommFailureStatus(statusEl, {
+            url: getGasUrl(),
+            status: 0,
+            error: "例外が発生しました。"
+        });
+    }
+}
+
+function normalizeRecurringTime(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+        return "00:00:00";
+    }
+
+    const parts = text.split(":").map((part) => Number(part));
+    const hours = Number.isFinite(parts[0]) ? Math.max(0, Math.min(23, parts[0])) : 0;
+    const minutes = Number.isFinite(parts[1]) ? Math.max(0, Math.min(59, parts[1])) : 0;
+    const seconds = Number.isFinite(parts[2]) ? Math.max(0, Math.min(59, parts[2])) : 0;
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+}
+
+function bindRecurringEventForm() {
+    const form = document.getElementById("admin-recurring-event-form");
+    const status = document.getElementById("admin-recurring-event-status");
+    if (!form || !status) {
         return;
     }
 
-    const posted = await postToEndpoint(config?.calendar?.management?.submitEndpoint, {
-        type: "managedEvent",
-        event
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        try {
+            const fd = new FormData(form);
+            const title = String(fd.get("title") || "").trim();
+            const category = String(fd.get("category") || "").trim();
+            const place = String(fd.get("place") || "").trim();
+            const description = String(fd.get("description") || "").trim();
+            const weekOfMonth = String(fd.get("weekOfMonth") || "1");
+            const dayOfWeek = String(fd.get("dayOfWeek") || "0");
+            const startTime = normalizeRecurringTime(fd.get("startTime"));
+            const endTime = normalizeRecurringTime(fd.get("endTime"));
+
+            if (!title || !category || !place || !startTime || !endTime) {
+                setStatusText(status, "通信試行終了（入力不足）");
+                return;
+            }
+
+            const payload = {
+                action: "addRecurringEvent",
+                title,
+                category,
+                place,
+                description,
+                weekOfMonth,
+                dayOfWeek,
+                startTime,
+                endTime
+            };
+
+            const result = await postToGas(payload);
+            if (!result.ok) {
+                setCommFailureStatus(status, result);
+                return;
+            }
+            setStatusText(status, buildDebugStatus(payload.action, payload, result));
+        } catch {
+            setCommFailureStatus(status, {
+                url: getGasUrl(),
+                status: 0,
+                error: "例外が発生しました。"
+            });
+        }
     });
-
-    const local = loadLocalEvents(config);
-    saveLocalEvents([...local, event]);
-
-    statusEl.textContent = posted
-        ? "Google連携でイベント登録しました。"
-        : "イベント登録しました（Apps Script未設定のためローカル保存）。";
-    form.reset();
 }
 
-function bindSimpleAdminForm(formId, statusId, endpoint, kind) {
+function bindSimpleAdminForm(formId, statusId, action, kind) {
     const form = document.getElementById(formId);
     const status = document.getElementById(statusId);
     if (!form || !status) {
@@ -827,18 +981,58 @@ function bindSimpleAdminForm(formId, statusId, endpoint, kind) {
 
     form.addEventListener("submit", async (e) => {
         e.preventDefault();
-        const fd = new FormData(form);
-        const payload = {
-            type: kind,
-            data: Object.fromEntries(fd.entries()),
-            createdAt: new Date().toISOString()
-        };
+        try {
+            const fd = new FormData(form);
+            const fields = Object.fromEntries(fd.entries());
+            let requestPayload = { action, createdAt: new Date().toISOString() };
 
-        const posted = await postToEndpoint(endpoint, payload);
-        status.textContent = posted
-            ? "Google連携で登録しました。"
-            : "登録しました（Apps Script未設定のためローカル処理）。";
-        form.reset();
+            if (action === "addPeople") {
+                requestPayload = {
+                    ...requestPayload,
+                    userId: String(fields.userId || fields.phone || "").trim(),
+                    pin: String(fields.pin || "").trim(),
+                    name: String(fields.name || "").trim(),
+                    role: String(fields.role || "一般").trim()
+                };
+            } else if (action === "addEquipmentMaster") {
+                requestPayload = {
+                    ...requestPayload,
+                    equipmentName: String(fields.equipmentName || "").trim(),
+                    stock: Number(fields.stock || 0),
+                    location: String(fields.location || "").trim(),
+                    memo: String(fields.memo || "").trim(),
+                    state: "良好"
+                };
+            } else {
+                requestPayload = {
+                    ...requestPayload,
+                    type: kind,
+                    data: fields
+                };
+            }
+
+            const result = await postToGas(requestPayload);
+            if (!result.ok) {
+                setCommFailureStatus(status, result);
+                return;
+            }
+            setStatusText(status, buildDebugStatus(action, requestPayload, result));
+        } catch {
+            setCommFailureStatus(status, {
+                url: getGasUrl(),
+                status: 0,
+                error: "例外が発生しました。"
+            });
+        }
+    });
+}
+
+function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("ファイル読み込みに失敗しました。"));
+        reader.readAsDataURL(file);
     });
 }
 
@@ -851,29 +1045,36 @@ function bindCategoryForm(config) {
 
     form.addEventListener("submit", async (e) => {
         e.preventDefault();
-        const fd = new FormData(form);
-        const categoryName = String(fd.get("categoryName") || "").trim();
+        try {
+            const fd = new FormData(form);
+            const categoryName = String(fd.get("categoryName") || "").trim();
 
-        if (!categoryName) {
-            status.textContent = "カテゴリ名を入力してください。";
-            return;
+            if (!categoryName) {
+                setStatusText(status, "通信試行終了（入力不足）");
+                return;
+            }
+
+            const payload = {
+                action: "addEventCategory",
+                categoryName,
+                createdAt: new Date().toISOString()
+            };
+
+            const result = await postToGas(payload);
+
+            if (!result.ok) {
+                setCommFailureStatus(status, result);
+                return;
+            }
+
+            setStatusText(status, buildDebugStatus(payload.action, payload, result));
+        } catch {
+            setCommFailureStatus(status, {
+                url: getGasUrl(),
+                status: 0,
+                error: "例外が発生しました。"
+            });
         }
-
-        const posted = await postToEndpoint(config?.calendar?.management?.categorySubmitEndpoint, {
-            type: "eventCategory",
-            categoryName,
-            createdAt: new Date().toISOString()
-        });
-
-        const local = loadLocalCategories(config);
-        if (!local.includes(categoryName)) {
-            saveLocalCategories([...local, categoryName]);
-        }
-
-        status.textContent = posted
-            ? "カテゴリをGoogle連携で登録しました。"
-            : "カテゴリを登録しました（Apps Script未設定のためローカル保存）。";
-        form.reset();
     });
 }
 
@@ -886,46 +1087,163 @@ function bindDriveDocUploadForm(config) {
 
     form.addEventListener("submit", async (e) => {
         e.preventDefault();
-        const fd = new FormData(form);
-        const files = fd.getAll("files").filter((file) => file instanceof File && file.size > 0);
-        if (files.length === 0) {
-            status.textContent = "PDFファイルを選択してください。";
-            return;
-        }
+        try {
+            const fd = new FormData(form);
+            const files = fd.getAll("files").filter((file) => file instanceof File && file.size > 0);
+            if (files.length === 0) {
+                setStatusText(status, "通信試行終了（入力不足）");
+                return;
+            }
 
-        const upload = new FormData();
-        upload.append("action", "uploadDocuments");
-        upload.append("destination", String(fd.get("destination") || ""));
-        upload.append("category", String(fd.get("category") || ""));
-        upload.append("title", String(fd.get("title") || ""));
-        files.forEach((file) => upload.append("files", file));
+            const destination = String(fd.get("destination") || "").trim();
+            const category = String(fd.get("category") || "").trim();
+            const title = String(fd.get("title") || "").trim();
+            const uploader = String(fd.get("uploaderName") || "admin").trim();
 
-        const ok = await postFormToEndpoint(config?.drive?.uploadEndpoint, upload);
-        status.textContent = ok
-            ? "Google Driveへ資料を保存しました。"
-            : "資料保存に失敗しました（Apps Script設定を確認）。";
-        if (ok) {
-            form.reset();
+            let lastResult = null;
+            for (const file of files) {
+                const fileData = await fileToDataUrl(file);
+                lastResult = await postToGas({
+                    action: "uploadDocument",
+                    destination,
+                    category,
+                    title: title || file.name,
+                    uploader,
+                    fileName: file.name,
+                    mimeType: file.type || "application/pdf",
+                    fileData
+                });
+
+                if (!lastResult.ok) {
+                    setCommFailureStatus(status, lastResult);
+                    return;
+                }
+            }
+
+            const debugPayload = {
+                action: "uploadDocument",
+                destination,
+                category,
+                title,
+                fileCount: files.length
+            };
+            setStatusText(status, buildDebugStatus("uploadDocument", debugPayload, lastResult || { ok: true, url: getGasUrl(), status: 200 }));
+        } catch {
+            setCommFailureStatus(status, {
+                url: getGasUrl(),
+                status: 0,
+                error: "例外が発生しました。"
+            });
         }
     });
 }
 
-function fillManagedEventCategoryFilter(categories) {
-    const select = document.getElementById("learning-category-filter");
-    if (!select) {
+function setAdminPanelsVisible(isVisible) {
+    const protectedArea = document.getElementById("admin-protected");
+    if (!protectedArea) {
         return;
     }
-    const current = select.value;
-    select.innerHTML = "<option value=\"all\">すべて</option>";
-    categories.forEach((category) => {
-        const option = document.createElement("option");
-        option.value = category;
-        option.textContent = category;
-        select.appendChild(option);
+    protectedArea.classList.toggle("hidden", !isVisible);
+
+    const controls = protectedArea.querySelectorAll("input, select, textarea, button");
+    controls.forEach((control) => {
+        if (control instanceof HTMLInputElement
+            || control instanceof HTMLSelectElement
+            || control instanceof HTMLTextAreaElement
+            || control instanceof HTMLButtonElement) {
+            control.disabled = !isVisible;
+        }
     });
-    if (current && Array.from(select.options).some((opt) => opt.value === current)) {
-        select.value = current;
+}
+
+function bindAdminLogin() {
+    const form = document.getElementById("admin-login-form");
+    const status = document.getElementById("admin-login-status");
+    const currentRole = document.getElementById("admin-current-role");
+
+    if (!form || !status) {
+        return;
     }
+
+    setAdminPanelsVisible(false);
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const fd = new FormData(form);
+        const payload = {
+            action: "login",
+            userId: String(fd.get("userId") || "").trim(),
+            pin: String(fd.get("pin") || "").trim()
+        };
+
+        const result = await postToGas(payload);
+        if (!result.ok) {
+            setAdminPanelsVisible(false);
+            setCommFailureStatus(status, result);
+            return;
+        }
+
+        const loginResult = result?.response?.data || result?.response || {};
+        const isOfficer = String(loginResult?.role || "") === "役員";
+        if (!isOfficer || loginResult?.success === false) {
+            setAdminPanelsVisible(false);
+            const message = String(loginResult?.error || loginResult?.message || "役員アカウントのみ利用できます。");
+            setStatusText(status, `【通信失敗】URL: ${result.url} | エラー内容: HTTP=${result.status || "N/A"} / ${message}`, true);
+            return;
+        }
+
+        setAdminPanelsVisible(true);
+        setStatusText(status, `ログイン成功: URL=${result.url} | HTTP=${result.status}`);
+        if (currentRole) {
+            currentRole.textContent = `ログイン中: ${String(loginResult?.name || "") || payload.userId}（${String(loginResult?.role || "") || "役員"}）`;
+        }
+    });
+}
+
+function bindAdminCalendarCreateFormStandalone(config) {
+    const createForm = document.getElementById("admin-calendar-create-form");
+    const createStatus = document.getElementById("admin-calendar-create-status");
+
+    if (!(createForm && createStatus)) {
+        return;
+    }
+
+    if (createForm.dataset.listenerBound === "true") {
+        return;
+    }
+    createForm.dataset.listenerBound = "true";
+
+    createForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        createStatus.style.color = "inherit";
+        createStatus.textContent = "通信中...";
+
+        const fd = new FormData(createForm);
+        const payload = {
+            action: "addEvent",
+            title: String(fd.get("title") || "").trim(),
+            start: String(fd.get("start") || ""),
+            end: String(fd.get("end") || ""),
+            place: String(fd.get("location") || "").trim(),
+            description: String(fd.get("description") || "").trim(),
+            allDay: createForm.querySelector('input[name="allDay"]')?.checked || false
+        };
+
+        try {
+            const result = await postToGas(payload);
+            if (!result?.ok) {
+                setCommFailureStatus(createStatus, result);
+                return;
+            }
+
+            createStatus.style.color = "green";
+            createStatus.textContent = `送信成功: URL=${result.url} | HTTP=${result.status}`;
+            createForm.reset();
+        } catch (err) {
+            createStatus.style.color = "red";
+            createStatus.textContent = `【通信失敗】URL: ${getGasUrl()} | エラー: ${err instanceof Error ? err.message : String(err)}`;
+        }
+    });
 }
 
 function bindLearningEventSelection(events) {
@@ -956,59 +1274,99 @@ export async function initManagedEventsPage(config) {
         return;
     }
 
-    const loadedEvents = await loadManagedEvents(config);
-    const displayEvents = loadedEvents.filter((event) => isLearningEvent(event) && event.type === "special");
-    renderLearningSelectedEvent(null, displayEvents, config);
+    let loadedEvents = [];
+    try {
+        loadedEvents = await loadManagedEvents(config);
+    } catch {
+        loadedEvents = [];
+    }
 
-    const learningCalendar = renderLearningCalendar(displayEvents, config);
-    bindCommunityCreateModal(config, displayEvents, (newEvent) => {
-        if (learningCalendar) {
-            const parsed = parseScheduleLabelToCalendarEvent(newEvent);
-            if (parsed) {
-                learningCalendar.addEvent(parsed);
+    const displayEvents = Array.isArray(loadedEvents)
+        ? loadedEvents.filter((event) => isLearningEvent(event) && event.type === "special")
+        : [];
+
+    let learningCalendar = null;
+    try {
+        renderLearningSelectedEvent(null, displayEvents, config);
+        learningCalendar = renderLearningCalendar(displayEvents, config) || null;
+    } catch {
+        renderLearningSelectedEvent(null, [], config);
+        learningCalendar = renderLearningCalendar([], config) || null;
+    }
+
+    try {
+        bindCommunityCreateModal(config, displayEvents, (newEvent) => {
+            if (learningCalendar) {
+                const parsed = parseScheduleLabelToCalendarEvent(newEvent);
+                if (parsed) {
+                    learningCalendar.addEvent(parsed);
+                }
             }
-        }
-        renderLearningSelectedEvent(newEvent, displayEvents, config);
-    });
+            renderLearningSelectedEvent(newEvent, displayEvents, config);
+        });
+    } catch {
+        // テストモードでは初期化失敗を握りつぶして継続する。
+    }
 }
 
 export function initAdminCommunityForms(config) {
-    applyEventsSheetLink(config);
-    applyAdminDataLinks(config);
-
-    const recurringForm = document.getElementById("admin-recurring-event-form");
-    const recurringStatus = document.getElementById("admin-recurring-event-status");
-    const specialForm = document.getElementById("admin-special-event-form");
-    const specialStatus = document.getElementById("admin-special-event-status");
-
-    if (recurringForm && recurringStatus) {
-        recurringForm.addEventListener("submit", async (e) => {
-            e.preventDefault();
-            await handleEventFormSubmit(recurringForm, recurringStatus, "recurring", config);
-        });
+    try {
+        bindAdminLogin();
+    } catch {
+        // テストモードではログインUI初期化失敗を無視する。
     }
 
-    if (specialForm && specialStatus) {
-        specialForm.addEventListener("submit", async (e) => {
-            e.preventDefault();
-            await handleEventFormSubmit(specialForm, specialStatus, "special", config);
-        });
+    try {
+        bindAdminCalendarCreateFormStandalone(config);
+    } catch {
+        // テストモードでは最優先の送信フォーム登録失敗も握りつぶして継続する。
     }
 
-    bindCategoryForm(config);
-    bindDriveDocUploadForm(config);
+    try {
+        applyEventsSheetLink(config);
+    } catch {
+        // テストモードではリンク反映失敗を無視する。
+    }
+    try {
+        applyAdminDataLinks(config);
+    } catch {
+        // テストモードではリンク反映失敗を無視する。
+    }
+    try {
+        bindRecurringEventForm();
+    } catch {
+        // テストモードではフォーム初期化失敗を無視する。
+    }
 
-    bindSimpleAdminForm(
-        "admin-people-form",
-        "admin-people-status",
-        config?.adminData?.people?.submitEndpoint,
-        "peopleLedger"
-    );
+    try {
+        bindCategoryForm(config);
+    } catch {
+        // テストモードではフォーム初期化失敗を無視する。
+    }
+    try {
+        bindDriveDocUploadForm(config);
+    } catch {
+        // テストモードではフォーム初期化失敗を無視する。
+    }
+    try {
+        bindSimpleAdminForm(
+            "admin-people-form",
+            "admin-people-status",
+            "addPeople",
+            "peopleLedger"
+        );
+    } catch {
+        // テストモードではフォーム初期化失敗を無視する。
+    }
 
-    bindSimpleAdminForm(
-        "admin-equipment-ledger-form",
-        "admin-equipment-ledger-status",
-        config?.adminData?.equipmentLedger?.submitEndpoint,
-        "equipmentLedger"
-    );
+    try {
+        bindSimpleAdminForm(
+            "admin-equipment-ledger-form",
+            "admin-equipment-ledger-status",
+            "addEquipmentMaster",
+            "equipmentLedger"
+        );
+    } catch {
+        // テストモードではフォーム初期化失敗を無視する。
+    }
 }

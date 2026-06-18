@@ -30,42 +30,23 @@
 
         <main class="section-stack">
             <section class="card admin-login-section">
-                <h1>管理者ログイン（予定）</h1>
-                <p>Firebase Authentication を使って Google ログインし、個人情報・写真を安全に保存できます。</p>
-                <button class="button" id="google-signin-btn" type="button">
-                    Googleでログイン
-                </button>
-                <button class="button" id="google-signout-btn" type="button" disabled>
-                    ログアウト
-                </button>
-                <p id="login-status" class="note" aria-live="polite">
-                    ログイン状態を確認中です。
-                </p>
-            </section>
-
-            <section class="card">
-                <h2>個人情報・写真の保存（Firebase）</h2>
-                <p class="note">Googleログイン後、Firestore に個人情報、Storage に写真を保存します。</p>
-                <form id="admin-member-profile-form" class="inline-form">
-                    <label>氏名
-                        <input name="name" type="text" required>
+                <h1>管理ページ（GAS連携）</h1>
+                <p>公開運用のため、役員アカウントでのPINログインが必要です。</p>
+                <p class="note">フロントエンドには API キーやサービスアカウント情報を保持しません。</p>
+                <form id="admin-login-form" class="inline-form">
+                    <label>ユーザーID（メール等）
+                        <input name="userId" type="text" required>
                     </label>
-                    <label>電話番号
-                        <input name="phone" type="tel" required>
+                    <label>PIN（4桁）
+                        <input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
                     </label>
-                    <label>組・班
-                        <input name="group" type="text" required>
-                    </label>
-                    <label>メモ
-                        <textarea name="note"></textarea>
-                    </label>
-                    <label>写真ファイル
-                        <input name="photo" type="file" accept="image/*">
-                    </label>
-                    <button class="button" type="submit">Firebaseへ保存</button>
-                    <p id="admin-member-profile-status" class="note" aria-live="polite"></p>
+                    <button class="button" type="submit">ログイン</button>
+                    <p id="admin-login-status" class="note" aria-live="polite"></p>
+                    <p id="admin-current-role" class="note" aria-live="polite"></p>
                 </form>
             </section>
+
+            <div id="admin-protected" class="hidden">
 
             <section class="admin-grid">
                 <article class="card">
@@ -122,64 +103,6 @@
                     <p id="admin-calendar-create-status" class="note" aria-live="polite"></p>
                 </form>
 
-                <form id="admin-event-category-form" class="inline-form card sub-card">
-                    <h3>行事カテゴリ管理</h3>
-                    <label>カテゴリ名
-                        <input name="categoryName" type="text" placeholder="例: 清掃 / 会議 / ミニ集会 / セミナー" required>
-                    </label>
-                    <button class="button" type="submit">カテゴリを登録</button>
-                    <p id="admin-event-category-status" class="note" aria-live="polite"></p>
-                </form>
-
-                <div class="admin-form-grid">
-                    <form id="admin-recurring-event-form" class="inline-form card sub-card">
-                        <h3>定例行事を登録</h3>
-                        <label>行事名
-                            <input name="title" type="text" required>
-                        </label>
-                        <label>カテゴリ
-                            <input name="category" type="text" placeholder="清掃 / 会議 など" required>
-                        </label>
-                        <label>定例スケジュール
-                            <input name="scheduleLabel" type="text" placeholder="毎月第1日曜 8:00" required>
-                        </label>
-                        <label>場所
-                            <input name="place" type="text" required>
-                        </label>
-                        <label>参加登録フォームURL（任意）
-                            <input name="recruitFormUrl" type="url" placeholder="https://forms.gle/...">
-                        </label>
-                        <label>説明
-                            <textarea name="description"></textarea>
-                        </label>
-                        <button class="button" type="submit">定例行事を登録</button>
-                        <p id="admin-recurring-event-status" class="note" aria-live="polite"></p>
-                    </form>
-
-                    <form id="admin-special-event-form" class="inline-form card sub-card">
-                        <h3>追加イベントを登録</h3>
-                        <label>イベント名
-                            <input name="title" type="text" required>
-                        </label>
-                        <label>カテゴリ
-                            <input name="category" type="text" placeholder="ミニ集会 / セミナー など" required>
-                        </label>
-                        <label>開催日時
-                            <input name="scheduleLabel" type="text" placeholder="2026-08-20 19:00" required>
-                        </label>
-                        <label>場所
-                            <input name="place" type="text" required>
-                        </label>
-                        <label>参加登録フォームURL（任意）
-                            <input name="recruitFormUrl" type="url" placeholder="https://forms.gle/...">
-                        </label>
-                        <label>説明
-                            <textarea name="description"></textarea>
-                        </label>
-                        <button class="button" type="submit">追加イベントを登録</button>
-                        <p id="admin-special-event-status" class="note" aria-live="polite"></p>
-                    </form>
-                </div>
             </section>
 
             <section class="card">
@@ -188,17 +111,20 @@
                     <a id="admin-people-sheet-link" class="button-link" href="#" target="_blank" rel="noopener noreferrer">個人情報Sheet</a>
                 </div>
                 <form id="admin-people-form" class="inline-form">
+                    <label>ユーザーID（メール等）
+                        <input name="userId" type="text" required>
+                    </label>
+                    <label>PIN（4桁）
+                        <input name="pin" type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
+                    </label>
                     <label>氏名
                         <input name="name" type="text" required>
                     </label>
-                    <label>電話番号
-                        <input name="phone" type="tel" required>
-                    </label>
-                    <label>組・班
-                        <input name="group" type="text" required>
-                    </label>
-                    <label>メモ
-                        <textarea name="memo"></textarea>
+                    <label>役職
+                        <select name="role" required>
+                            <option value="一般">一般</option>
+                            <option value="役員">役員</option>
+                        </select>
                     </label>
                     <button class="button" type="submit">個人情報を登録</button>
                     <p id="admin-people-status" class="note" aria-live="polite"></p>
@@ -266,6 +192,9 @@
                     <label>カテゴリ
                         <input name="category" type="text" placeholder="例: 回覧板 / 会則 / 議事録" required>
                     </label>
+                    <label>投稿者名
+                        <input name="uploaderName" type="text" required>
+                    </label>
                     <label>タイトル
                         <input name="title" type="text" required>
                     </label>
@@ -301,6 +230,7 @@
                 <p id="admin-opinion-status" class="note" aria-live="polite"></p>
                 <div id="admin-opinion-list" class="admin-opinion-list"></div>
             </section>
+            </div>
         </main>
 
         <footer class="site-footer">

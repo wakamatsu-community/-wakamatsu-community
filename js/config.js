@@ -5,6 +5,8 @@
 // ホームページ本体のコードは変更不要です。
 // ====================================================================
 
+import { RUNTIME_CONFIG } from "./runtime-config.js";
+
 export const SITE_CONFIG = {
 
     // ------------------------------------------------------------------
@@ -14,6 +16,8 @@ export const SITE_CONFIG = {
     // 設定方法: Google Calendar > カレンダーを共有 > 埋め込みコード の src= 部分
     // ------------------------------------------------------------------
     calendar: {
+        apiKey: RUNTIME_CONFIG.GOOGLE_CALENDAR_API_KEY,
+        calendarId: RUNTIME_CONFIG.GOOGLE_CALENDAR_ID,
         mainUrl: "https://calendar.google.com/calendar/embed?src=sample-main%40example.com&ctz=Asia%2FTokyo&mode=MONTH",
         learningUrl: "https://calendar.google.com/calendar/embed?src=sample-learning%40example.com&ctz=Asia%2FTokyo&mode=AGENDA",
         management: {
@@ -266,6 +270,10 @@ export const SITE_CONFIG = {
 
     emergency: {
         message: "現在、緊急のお知らせはありません。"
+    },
+
+    gas: {
+        webAppUrl: RUNTIME_CONFIG.GAS_WEB_APP_URL
     },
 
     adminData: {

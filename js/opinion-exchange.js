@@ -1,3 +1,5 @@
+import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
+
 const OPINION_STORE_KEY = "wakamatsu_opinion_exchange_v1";
 const OPINION_STATUS_UNCONFIRMED = "未確認";
 const OPINION_STATUS_OPTIONS = ["検討中", "対応中", "解消", "その他"];
@@ -145,6 +147,73 @@ function createOpinionRecord(form) {
     };
 }
 
+async function fetchOpinionsFromGas() {
+    try {
+        const payload = await gasGet({ action: "getOpinions" });
+        const rows = Array.isArray(payload)
+            ? payload
+            : Array.isArray(payload?.data)
+                ? payload.data
+                : [];
+
+        return rows.map((row, idx) => normalizeOpinion({
+            id: String(row?.["投稿ID"] || `OP-${Date.now()}-${idx}`),
+            name: String(row?.["名前"] || "").trim(),
+            category: String(row?.["カテゴリ"] || "").trim(),
+            content: String(row?.["内容"] || "").trim(),
+            answered: String(row?.["返信状態"] || "") !== "未対応",
+            status: String(row?.["管理ステータス"] || "未確認"),
+            reason: String(row?.["返信状態"] || "").trim(),
+            createdAt: String(row?.["日時"] || ""),
+            updatedAt: String(row?.["日時"] || "")
+        })).filter((item) => item.content);
+    } catch {
+        return [];
+    }
+}
+
+async function submitOpinionToGas(record) {
+    const requestUrl = getGasUrl();
+    try {
+        const response = await gasPost({
+            action: "addOpinion",
+            name: record.name,
+            category: record.category,
+            content: record.content
+        });
+
+        const hasBusinessError = response && (
+            response.ok === false
+            || response.success === false
+            || response.result === false
+            || response.isError === true
+            || Boolean(response.error)
+        );
+        if (hasBusinessError) {
+            return {
+                ok: false,
+                url: String(response?._requestUrl || requestUrl),
+                status: Number(response?._httpStatus || 200),
+                error: String(response?.error || response?.message || "GASから失敗応答が返されました。")
+            };
+        }
+
+        return {
+            ok: true,
+            url: String(response?._requestUrl || requestUrl),
+            status: Number(response?._httpStatus || 200),
+            error: ""
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            url: requestUrl,
+            status: 0,
+            error: String(error && error.message || error)
+        };
+    }
+}
+
 export function initOpinionExchangePage() {
     const form = document.getElementById("opinion-form");
     const list = document.getElementById("opinion-entry-list");
@@ -154,10 +223,17 @@ export function initOpinionExchangePage() {
         return;
     }
 
-    const opinions = loadLocalOpinions();
-    renderOpinionEntries(list, opinions);
+    fetchOpinionsFromGas().then((opinionsFromGas) => {
+        const opinions = opinionsFromGas.length > 0 ? opinionsFromGas : loadLocalOpinions();
+        if (opinionsFromGas.length > 0) {
+            saveLocalOpinions(opinionsFromGas);
+        }
+        renderOpinionEntries(list, opinions);
+    }).catch(() => {
+        renderOpinionEntries(list, loadLocalOpinions());
+    });
 
-    form.addEventListener("submit", (event) => {
+    form.addEventListener("submit", async (event) => {
         event.preventDefault();
         const record = createOpinionRecord(form);
 
@@ -168,13 +244,26 @@ export function initOpinionExchangePage() {
             return;
         }
 
-        const nextOpinions = [record, ...loadLocalOpinions()];
+        const result = await submitOpinionToGas(record);
+        if (!result.ok) {
+            const nextOpinions = [record, ...loadLocalOpinions()];
+            saveLocalOpinions(nextOpinions);
+            renderOpinionEntries(list, nextOpinions);
+            form.reset();
+            if (status) {
+                status.textContent = `【通信失敗】URL: ${result.url} | エラー内容: HTTP=${result.status || "N/A"} / ${result.error}`;
+            }
+            return;
+        }
+
+        const refreshed = await fetchOpinionsFromGas();
+        const nextOpinions = refreshed.length > 0 ? refreshed : [record, ...loadLocalOpinions()];
         saveLocalOpinions(nextOpinions);
         renderOpinionEntries(list, nextOpinions);
         form.reset();
 
         if (status) {
-            status.textContent = "投稿を受け付けました。管理者が確認します。";
+            status.textContent = `送信成功: URL=${result.url} | HTTP=${result.status}`;
         }
     });
 }

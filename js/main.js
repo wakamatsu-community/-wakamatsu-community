@@ -1,5 +1,5 @@
 import { SITE_CONFIG } from "./config.js";
-import { initAdminCalendarForm, initCalendarPage } from "./calendar.js";
+import { initCalendarPage } from "./calendar.js";
 import { initDocumentsPage } from "./drive.js";
 import { initMapPage } from "./map.js";
 import { initFormsPage } from "./form.js";
@@ -7,7 +7,6 @@ import { initGalleryPage } from "./gallery.js";
 import { initEquipmentPage, initAdminReturnAlerts } from "./equipment.js";
 import { initManagedEventsPage, initAdminCommunityForms, loadAllManagedEvents } from "./community-admin.js";
 import { initOpinionExchangePage, initAdminOpinionExchange } from "./opinion-exchange.js";
-import { initFirebaseAdminSection } from "./firebase-admin.js";
 
 function setupNavigation() {
     const current = location.pathname.split("/").pop() || "index.html";
@@ -158,53 +157,63 @@ function setupDisasterPage(config) {
     }
 }
 
-document.addEventListener("DOMContentLoaded", async () => {
-    setupNavigation();
+async function runSafeInit(initFn) {
+    try {
+        await initFn();
+    } catch {
+        // スタンドアロンテストモードでは個別初期化失敗を握りつぶして続行する。
+    }
+}
 
+document.addEventListener("DOMContentLoaded", async () => {
+    try {
+        setupNavigation();
+    } catch {
+        // ナビゲーション初期化失敗は他機能へ波及させない。
+    }
     const page = document.body.dataset.page;
 
     if (page === "home") {
-        await setupHomePage(SITE_CONFIG);
+        await runSafeInit(async () => setupHomePage(SITE_CONFIG));
     }
 
     if (page === "events") {
-        initCalendarPage(SITE_CONFIG);
-        await initManagedEventsPage(SITE_CONFIG);
+        await runSafeInit(async () => initCalendarPage(SITE_CONFIG));
     }
 
     if (page === "documents") {
-        await initDocumentsPage(SITE_CONFIG);
+        await runSafeInit(async () => initDocumentsPage(SITE_CONFIG));
     }
 
     if (page === "map") {
-        initMapPage(SITE_CONFIG);
+        await runSafeInit(async () => initMapPage(SITE_CONFIG));
     }
 
     if (page === "equipment") {
-        initFormsPage(SITE_CONFIG);
+        await runSafeInit(async () => initFormsPage(SITE_CONFIG));
     }
 
     if (page === "equipment") {
-        await initEquipmentPage(SITE_CONFIG);
+        await runSafeInit(async () => initEquipmentPage(SITE_CONFIG));
     }
 
     if (page === "disaster") {
-        setupDisasterPage(SITE_CONFIG);
+        await runSafeInit(async () => setupDisasterPage(SITE_CONFIG));
     }
 
     if (page === "gallery") {
-        initGalleryPage(SITE_CONFIG);
+        await runSafeInit(async () => initGalleryPage(SITE_CONFIG));
     }
 
     if (page === "opinion") {
-        initOpinionExchangePage(SITE_CONFIG);
+        await runSafeInit(async () => initOpinionExchangePage(SITE_CONFIG));
     }
 
     if (page === "admin") {
-        await initAdminReturnAlerts(SITE_CONFIG);
-        initAdminCommunityForms(SITE_CONFIG);
-        initAdminOpinionExchange(SITE_CONFIG);
-        initAdminCalendarForm();
-        initFirebaseAdminSection();
+        const adminConfig = SITE_CONFIG || {};
+        await runSafeInit(async () => initAdminCommunityForms(adminConfig));
+        await runSafeInit(async () => initAdminReturnAlerts(adminConfig));
+        await runSafeInit(async () => initManagedEventsPage(adminConfig));
+        await runSafeInit(async () => initAdminOpinionExchange(adminConfig));
     }
 });

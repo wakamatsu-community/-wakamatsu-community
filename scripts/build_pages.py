@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build static site for local/dev deployment with runtime env injection."""
+"""Build static site files for deployment."""
 
 from __future__ import annotations
 
@@ -29,59 +29,18 @@ IGNORED_FILES = {
     ".env.local.example",
 }
 
-
-def parse_env_file(path: Path) -> dict[str, str]:
-    env: dict[str, str] = {}
-    if not path.exists():
-        return env
-
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("\"'")
-        env[key] = value
-    return env
-
-
-def get_runtime_values(mode: str) -> dict[str, dict[str, str]]:
-    values: dict[str, str] = {}
-
-    if mode == "local":
-        values.update(parse_env_file(ROOT / ".env.local"))
-
-    for key in [
-        "GOOGLE_CALENDAR_API_KEY",
-        "GOOGLE_CALENDAR_ID",
-        "FIREBASE_API_KEY",
-        "FIREBASE_AUTH_DOMAIN",
-        "FIREBASE_PROJECT_ID",
-        "FIREBASE_STORAGE_BUCKET",
-        "FIREBASE_MESSAGING_SENDER_ID",
-        "FIREBASE_APP_ID",
-        "FIREBASE_MEASUREMENT_ID",
-    ]:
-        env_val = os.environ.get(key)
-        if env_val:
-            values[key] = env_val
-
-    return {
-        "google": {
-            "calendarApiKey": values.get("GOOGLE_CALENDAR_API_KEY", ""),
-            "calendarId": values.get("GOOGLE_CALENDAR_ID", ""),
-        },
-        "firebase": {
-            "apiKey": values.get("FIREBASE_API_KEY", ""),
-            "authDomain": values.get("FIREBASE_AUTH_DOMAIN", ""),
-            "projectId": values.get("FIREBASE_PROJECT_ID", ""),
-            "storageBucket": values.get("FIREBASE_STORAGE_BUCKET", ""),
-            "messagingSenderId": values.get("FIREBASE_MESSAGING_SENDER_ID", ""),
-            "appId": values.get("FIREBASE_APP_ID", ""),
-            "measurementId": values.get("FIREBASE_MEASUREMENT_ID", ""),
-        },
-    }
+RUNTIME_CONFIG_KEYS = [
+    "GAS_WEB_APP_URL",
+    "GOOGLE_CALENDAR_API_KEY",
+    "GOOGLE_CALENDAR_ID",
+    "FIREBASE_API_KEY",
+    "FIREBASE_AUTH_DOMAIN",
+    "FIREBASE_PROJECT_ID",
+    "FIREBASE_STORAGE_BUCKET",
+    "FIREBASE_MESSAGING_SENDER_ID",
+    "FIREBASE_APP_ID",
+    "FIREBASE_MEASUREMENT_ID",
+]
 
 
 def should_ignore(path: Path) -> bool:
@@ -114,26 +73,36 @@ def copy_workspace() -> None:
             shutil.copy2(item, target)
 
 
-def write_runtime_config(runtime_values: dict[str, dict[str, str]]) -> None:
-    runtime_path = DIST / "js" / "runtime-config.js"
-    runtime_path.parent.mkdir(parents=True, exist_ok=True)
-    js = (
-        "window.__RUNTIME_CONFIG__ = "
-        + json.dumps(runtime_values, ensure_ascii=False, indent=2)
-        + ";\n\nexport const RUNTIME_CONFIG = window.__RUNTIME_CONFIG__;\n"
+def inject_runtime_config() -> None:
+    runtime_config = {
+        key: os.getenv(key, "").strip()
+        for key in RUNTIME_CONFIG_KEYS
+    }
+    runtime_config_path = DIST / "js" / "runtime-config.js"
+    runtime_config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    content = (
+        "window.RUNTIME_CONFIG = "
+        + json.dumps(runtime_config, ensure_ascii=False, indent=2)
+        + ";\n\n"
+        + "const runtime = (typeof window !== \"undefined\" && window.RUNTIME_CONFIG)\n"
+        + "    ? window.RUNTIME_CONFIG\n"
+        + "    : {};\n\n"
+        + "export const RUNTIME_CONFIG = Object.freeze(runtime);\n"
     )
-    runtime_path.write_text(js, encoding="utf-8")
+    runtime_config_path.write_text(content, encoding="utf-8")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build static site files for deployment.")
+    parser.add_argument("--mode", choices=["local", "ci"], default="local")
+    return parser.parse_args()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build static files for GitHub Pages deployment")
-    parser.add_argument("--mode", choices=["local", "ci"], default="local")
-    args = parser.parse_args()
-
+    _args = parse_args()
     copy_workspace()
-    runtime_values = get_runtime_values(mode=args.mode)
-    write_runtime_config(runtime_values)
-
+    inject_runtime_config()
     print(f"[INFO] Built site to: {DIST}")
 
 

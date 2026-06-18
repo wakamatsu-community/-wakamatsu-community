@@ -1,139 +1,56 @@
-"""
-Google カレンダー予定取得スクリプト
-- 本番/ローカル共通: GOOGLE_CALENDAR_API_KEY で公開カレンダーを取得
-- 互換用         : GOOGLE_SERVICE_ACCOUNT_KEY / GOOGLE_SERVICE_ACCOUNT_PATH も利用可能
-取得結果を Docs/events.json に保存 → GitHub Pages で参照可能
-"""
+"""GAS API から行事データを取得し Docs/events.json に保存する。"""
+
+from __future__ import annotations
 
 import json
-import os
 import sys
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
-# ローカル開発時のみ .env を読み込む（本番環境では何もしない）
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass  # python-dotenv が未インストールの場合はスキップ
-
-from googleapiclient.discovery import build
-
-try:
-    from google.oauth2 import service_account
-except ImportError:
-    service_account = None
-
-# ---------------------------------------------------------------
-# 設定
-# ---------------------------------------------------------------
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
-OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "Docs", "events.json")
-# 取得する予定の件数上限
-MAX_RESULTS = 50
+GAS_URL = "https://script.google.com/macros/s/REPLACE_WITH_YOUR_DEPLOYMENT_ID/exec"
+OUTPUT_PATH = Path(__file__).resolve().parent / "Docs" / "events.json"
 
 
-def get_credentials():
-    """
-    認証情報を取得する。
-    優先順位:
-      1. GOOGLE_SERVICE_ACCOUNT_KEY (JSON文字列) ← GitHub Actions
-      2. GOOGLE_SERVICE_ACCOUNT_PATH (ファイルパス) ← ローカル .env
-    """
-    key_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_KEY")
-    if key_json:
-        if service_account is None:
-            print("[ERROR] service_account モジュールを利用できません。", file=sys.stderr)
-            sys.exit(1)
-        # 本番: 環境変数に埋め込まれた JSON 文字列から認証
-        try:
-            info = json.loads(key_json)
-        except json.JSONDecodeError as exc:
-            print(f"[ERROR] GOOGLE_SERVICE_ACCOUNT_KEY の JSON パースに失敗しました: {exc}", file=sys.stderr)
-            sys.exit(1)
-        return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+def fetch_events_from_gas() -> list[dict]:
+    query = urllib.parse.urlencode({"type": "calendar_events"})
+    url = f"{GAS_URL}?{query}"
 
-    key_path = os.environ.get("GOOGLE_SERVICE_ACCOUNT_PATH")
-    if key_path:
-        if service_account is None:
-            print("[ERROR] service_account モジュールを利用できません。", file=sys.stderr)
-            sys.exit(1)
-        # ローカル: .env に書かれたファイルパスから認証
-        if not os.path.isfile(key_path):
-            print(f"[ERROR] 指定されたサービスアカウントファイルが見つかりません: {key_path}", file=sys.stderr)
-            sys.exit(1)
-        return service_account.Credentials.from_service_account_file(key_path, scopes=SCOPES)
+    with urllib.request.urlopen(url, timeout=20) as response:
+        body = response.read().decode("utf-8")
 
-    print(
-        "[ERROR] 認証情報が見つかりません。\n"
-        "  本番環境 : 環境変数 GOOGLE_SERVICE_ACCOUNT_KEY を設定してください。\n"
-        "  ローカル : .env に GOOGLE_SERVICE_ACCOUNT_PATH を設定してください。",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-def fetch_events(service, calendar_id: str) -> list[dict]:
-    """Google Calendar API から今後の予定を取得する。"""
-    now = datetime.now(timezone.utc).isoformat()
-    result = (
-        service.events()
-        .list(
-            calendarId=calendar_id,
-            timeMin=now,
-            maxResults=MAX_RESULTS,
-            singleEvents=True,
-            orderBy="startTime",
-        )
-        .execute()
-    )
-    return result.get("items", [])
-
-
-def format_event(event: dict) -> dict:
-    """API レスポンスから必要なフィールドだけ抽出して返す。"""
-    start = event.get("start", {})
-    end = event.get("end", {})
-    return {
-        "id": event.get("id", ""),
-        "summary": event.get("summary", "（タイトルなし）"),
-        "description": event.get("description", ""),
-        "location": event.get("location", ""),
-        "start": start.get("dateTime") or start.get("date", ""),
-        "end": end.get("dateTime") or end.get("date", ""),
-        "allDay": "date" in start and "dateTime" not in start,
-        "htmlLink": event.get("htmlLink", ""),
-    }
+    payload = json.loads(body)
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        if isinstance(payload.get("events"), list):
+            return payload["events"]
+        if isinstance(payload.get("data"), list):
+            return payload["data"]
+    return []
 
 
 def save_events(events: list[dict]) -> None:
     """予定リストを JSON ファイルとして保存する。"""
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "generated": datetime.now(timezone.utc).isoformat(),
         "events": events,
     }
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+    with OUTPUT_PATH.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     print(f"[INFO] {len(events)} 件の予定を {OUTPUT_PATH} に保存しました。")
 
 
 def main() -> None:
-    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID")
-    if not calendar_id:
-        print("[ERROR] 環境変数 GOOGLE_CALENDAR_ID が設定されていません。", file=sys.stderr)
+    try:
+        events = fetch_events_from_gas()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ERROR] GAS API からイベント取得に失敗しました: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    api_key = os.environ.get("GOOGLE_CALENDAR_API_KEY", "")
-    if api_key:
-        service = build("calendar", "v3", developerKey=api_key, cache_discovery=False)
-    else:
-        credentials = get_credentials()
-        service = build("calendar", "v3", credentials=credentials)
-
-    raw_events = fetch_events(service, calendar_id)
-    formatted = [format_event(e) for e in raw_events]
-    save_events(formatted)
+    save_events(events)
 
 
 if __name__ == "__main__":

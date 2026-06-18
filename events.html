@@ -36,7 +36,7 @@
 
             <section class="card">
                 <h2>町内会カレンダー（カスタム表示）</h2>
-                <p id="calendar-connection-status" class="note">Google Calendar APIから読み込み中です...</p>
+                <p id="calendar-connection-status" class="note">読み込み中です...</p>
                 <p class="note">町内会カレンダーへの予定追加は管理ページから管理者が登録します。</p>
                 <div class="calendar-shell">
                     <div id="custom-calendar"></div>
@@ -48,67 +48,7 @@
                     <p id="calendar-selected-event-description">説明がここに表示されます。</p>
                 </div>
             </section>
-
-            <section class="card">
-                <h2>コミニティ 開催日一覧</h2>
-                <p class="note">コミニティ予定は誰でも登録できます。単発開催はカレンダーで日付を選ぶと下に内容が表示され、そのまま参加・不参加を記録できます。</p>
-                <div class="calendar-shell learning-calendar-embed">
-                    <div id="learning-calendar"></div>
-                </div>
-                <p id="learning-calendar-status" class="note">コミニティ開催カレンダーを準備中です...</p>
-                <div class="calendar-selected-event card sub-card">
-                    <h3 id="learning-selected-event-title">開催日を選択してください</h3>
-                    <p id="learning-selected-event-datetime" class="note">日時未選択</p>
-                    <p><strong>会場:</strong> <span id="learning-selected-event-place">-</span></p>
-                    <p><strong>参加人数:</strong> <span id="learning-selected-event-capacity">-</span></p>
-                    <p id="learning-selected-event-description">説明がここに表示されます。</p>
-                    <div class="button-row">
-                        <button id="learning-selected-event-attend" class="button" type="button" disabled>参加</button>
-                        <button id="learning-selected-event-decline" class="button" type="button" disabled>不参加</button>
-                    </div>
-                    <p id="learning-selected-event-response-status" class="note" aria-live="polite"></p>
-                </div>
-                <div class="button-row">
-                    <button id="open-community-event-create" class="button" type="button">コミニティ予定を登録する</button>
-                </div>
-            </section>
         </main>
-
-        <div id="community-event-create-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="community-event-create-title">
-            <section class="modal-card">
-                <h2 id="community-event-create-title">コミニティ予定の登録</h2>
-                <p class="note">カレンダーで日付や時間帯を選ぶと日時が自動入力されます。必要項目を入力して登録してください。</p>
-                <form id="community-event-create-form" class="inline-form calendar-create-form-grid">
-                    <label>開催するイベント名
-                        <input name="title" type="text" required>
-                    </label>
-                    <label>開始日時
-                        <input name="start" type="datetime-local" required>
-                    </label>
-                    <label>終了日時
-                        <input name="end" type="datetime-local">
-                    </label>
-                    <label>場所
-                        <input name="place" type="text" placeholder="例: 若松集会所" required>
-                    </label>
-                    <label>参加人数（最小）
-                        <input name="minParticipants" type="number" min="1" value="1" required>
-                    </label>
-                    <label>参加人数（最大）
-                        <input name="maxParticipants" type="number" min="1" required>
-                    </label>
-                    <label class="calendar-create-description">補足説明
-                        <textarea name="description" placeholder="持ち物・注意事項など"></textarea>
-                    </label>
-                    <div class="button-row modal-button-row">
-                        <button class="button" type="submit">登録</button>
-                        <button class="button" id="community-event-create-cancel" type="button">キャンセル</button>
-                        <button class="button" id="community-event-create-close" type="button">戻る</button>
-                    </div>
-                    <p id="community-event-create-status" class="note" aria-live="polite"></p>
-                </form>
-            </section>
-        </div>
 
         <footer class="site-footer">
             <p>&copy; 2026 福山市若松町内会コミュニケーションボード</p>
