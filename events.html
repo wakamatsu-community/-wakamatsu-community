@@ -48,6 +48,96 @@
                     <p id="calendar-selected-event-description">説明がここに表示されます。</p>
                 </div>
             </section>
+
+            <section class="card">
+                <h2>コミニティ開催日一覧カレンダー</h2>
+                <p id="learning-calendar-status" class="note">読み込み中です...</p>
+                <p class="note">開催者は日付をクリックして開催会を登録できます。参加希望者は予定を選択すると参加登録入力を表示できます。</p>
+                <div class="button-row">
+                    <button id="open-community-event-create" class="button" type="button">開催会を登録する</button>
+                </div>
+                <div class="calendar-shell learning-calendar-embed">
+                    <div id="learning-calendar"></div>
+                </div>
+                <div class="calendar-selected-event card sub-card">
+                    <h3 id="learning-selected-event-title">開催日を選択してください</h3>
+                    <p id="learning-selected-event-datetime" class="note">日時未選択</p>
+                    <p><strong>会場:</strong> <span id="learning-selected-event-place">-</span></p>
+                    <p><strong>参加人数:</strong> <span id="learning-selected-event-capacity">-</span></p>
+                    <p id="learning-selected-event-description">説明がここに表示されます。</p>
+                    <div class="button-row">
+                        <button id="learning-selected-event-attend" class="button" type="button" disabled>参加する</button>
+                        <button id="learning-selected-event-decline" class="button danger" type="button" disabled>不参加にする</button>
+                    </div>
+                    <p id="learning-selected-event-response-status" class="note" aria-live="polite"></p>
+                </div>
+            </section>
+
+            <div id="event-recruit-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="event-recruit-modal-title">
+                <section class="modal-card">
+                    <h2 id="event-recruit-modal-title">コミニティ参加登録</h2>
+                    <p class="note">参加したい開催会を選択し、必要事項を入力してください。</p>
+                    <form id="event-recruit-form" class="inline-form">
+                        <label>対象開催会
+                            <select id="recruit-event-id" name="eventId" required></select>
+                        </label>
+                        <label>お名前
+                            <input name="name" type="text" required>
+                        </label>
+                        <label>電話番号
+                            <input name="phone" type="tel" inputmode="tel" required>
+                        </label>
+                        <label>所属・班名
+                            <input name="group" type="text" placeholder="例: 1班 / 親子参加">
+                        </label>
+                        <label>参加人数
+                            <input name="count" type="number" min="1" value="1" required>
+                        </label>
+                        <div class="button-row modal-button-row">
+                            <button class="button" type="submit">参加要件を登録</button>
+                            <button id="event-recruit-cancel" class="button" type="button">入力クリア</button>
+                            <button id="event-recruit-close" class="button" type="button">閉じる</button>
+                        </div>
+                        <p id="event-recruit-status" class="note" aria-live="polite"></p>
+                    </form>
+                </section>
+            </div>
+
+            <div id="community-event-create-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="community-event-create-title">
+                <section class="modal-card">
+                    <h2 id="community-event-create-title">コミニティ開催会の登録</h2>
+                    <p class="note">開催者向け: 開催する会の内容を入力してください。</p>
+                    <form id="community-event-create-form" class="inline-form">
+                        <label>会の名称
+                            <input name="title" type="text" placeholder="例: 防災ミニ講座" required>
+                        </label>
+                        <label>開始日時
+                            <input name="start" type="datetime-local" required>
+                        </label>
+                        <label>終了日時
+                            <input name="end" type="datetime-local">
+                        </label>
+                        <label>開催場所
+                            <input name="place" type="text" placeholder="例: 若松集会所" required>
+                        </label>
+                        <label>最少参加人数
+                            <input name="minParticipants" type="number" min="1" value="1" required>
+                        </label>
+                        <label>最大参加人数
+                            <input name="maxParticipants" type="number" min="1" value="10" required>
+                        </label>
+                        <label>説明
+                            <textarea name="description" placeholder="内容や持ち物など"></textarea>
+                        </label>
+                        <div class="button-row modal-button-row">
+                            <button class="button" type="submit">開催会を登録</button>
+                            <button id="community-event-create-cancel" class="button" type="button">入力クリア</button>
+                            <button id="community-event-create-close" class="button" type="button">閉じる</button>
+                        </div>
+                        <p id="community-event-create-status" class="note" aria-live="polite"></p>
+                    </form>
+                </section>
+            </div>
         </main>
 
         <footer class="site-footer">

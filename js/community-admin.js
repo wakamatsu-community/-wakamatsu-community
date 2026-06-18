@@ -1,4 +1,4 @@
-import { gasPost, getGasUrl } from "./gas-api.js";
+import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
 
 const EVENTS_STORE_KEY = "wakamatsu_managed_events_v1";
 const EVENT_CATEGORIES_STORE_KEY = "wakamatsu_event_categories_v1";
@@ -28,7 +28,10 @@ async function fetchSheetRows(url) {
 async function postToGas(payload) {
     const url = getGasUrl();
     try {
-        const response = await gasPost(payload);
+        const action = String(payload?.action || "").trim();
+        const response = action === "login"
+            ? await gasGet(payload)
+            : await gasPost(payload);
         const hasBusinessError = response && (
             response.ok === false
             || response.success === false
@@ -773,6 +776,20 @@ function renderLearningCalendar(events, config) {
         .map(parseScheduleLabelToCalendarEvent)
         .filter(Boolean);
 
+    const findEventByDate = (dateStr) => {
+        if (!dateStr) {
+            return null;
+        }
+        return events.find((event) => {
+            const explicitStart = String(event?.start || "");
+            if (explicitStart) {
+                return explicitStart.slice(0, 10) === dateStr;
+            }
+            const matched = String(event?.scheduleLabel || "").match(/(\d{4}-\d{2}-\d{2})/);
+            return Boolean(matched && matched[1] === dateStr);
+        }) || null;
+    };
+
     const calendar = new window.FullCalendar.Calendar(root, {
         locale: "ja",
         initialView: "dayGridMonth",
@@ -792,8 +809,17 @@ function renderLearningCalendar(events, config) {
             const sourceEventId = info.event.extendedProps?.sourceEventId || info.event.id;
             const selected = events.find((item) => item.id === sourceEventId);
             renderLearningSelectedEvent(selected, events, config);
+            if (selected?.id) {
+                openRecruitFormForEvent(events, selected.id);
+            }
         },
         dateClick: (info) => {
+            const selected = findEventByDate(String(info.dateStr || ""));
+            if (selected?.id) {
+                renderLearningSelectedEvent(selected, events, config);
+                openRecruitFormForEvent(events, selected.id);
+                return;
+            }
             openCommunityCreateModal({ start: info.date, end: "" });
         },
         select: (info) => {
@@ -1292,6 +1318,14 @@ export async function initManagedEventsPage(config) {
     } catch {
         renderLearningSelectedEvent(null, [], config);
         learningCalendar = renderLearningCalendar([], config) || null;
+    }
+
+    try {
+        bindRecruitForm(config, displayEvents);
+        bindRecruitModalActions();
+        bindLearningEventSelection(displayEvents);
+    } catch {
+        // テストモードでは参加フォーム初期化失敗を無視する。
     }
 
     try {

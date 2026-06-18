@@ -35,10 +35,10 @@
                 <p class="note">フロントエンドには API キーやサービスアカウント情報を保持しません。</p>
                 <form id="admin-login-form" class="inline-form">
                     <label>ユーザーID（メール等）
-                        <input name="userId" type="text" required>
+                        <input name="userId" type="text" autocomplete="username" required>
                     </label>
                     <label>PIN（4桁）
-                        <input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
+                        <input name="pin" type="password" autocomplete="current-password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
                     </label>
                     <button class="button" type="submit">ログイン</button>
                     <p id="admin-login-status" class="note" aria-live="polite"></p>

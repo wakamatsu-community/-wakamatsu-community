@@ -179,6 +179,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (page === "events") {
         await runSafeInit(async () => initCalendarPage(SITE_CONFIG));
+        await runSafeInit(async () => initManagedEventsPage(SITE_CONFIG));
     }
 
     if (page === "documents") {

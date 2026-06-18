@@ -100,6 +100,8 @@ function doGet(e) {
     var action = (e && e.parameter && (e.parameter.action || e.parameter.type)) || "";
 
     switch (action) {
+      case "login":
+        return jsonResponse_({ ok: true, action: action, data: login_(e.parameter || {}) });
       case "getOpinions":
         return jsonResponse_({ ok: true, action: action, data: getOpinions_() });
       case "getEvents":
@@ -117,7 +119,7 @@ function doGet(e) {
           ok: false,
           error: "未対応のactionです。",
           receivedAction: action,
-          supportedActions: ["getOpinions","getEvents","calendar_events","getGallery","getEquipment","equipment_status"]
+          supportedActions: ["login","getOpinions","getEvents","calendar_events","getGallery","getEquipment","equipment_status"]
         });
     }
   } catch (err) {
