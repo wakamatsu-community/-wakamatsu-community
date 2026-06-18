@@ -10,20 +10,20 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-_gas_web_app_url = os.environ.get("GAS_WEB_APP_URL")
-if not _gas_web_app_url:
+_raw_url = os.environ.get("GAS_WEB_APP_URL", "").strip()
+if not _raw_url:
     print("[ERROR] GitHub Secrets の GAS_WEB_APP_URL が未設定または誤設定です。", file=sys.stderr)
     sys.exit(1)
-if "REPLACE_WITH_YOUR_DEPLOYMENT_ID" in _gas_web_app_url:
-    print("[ERROR] GitHub Secrets の GAS_WEB_APP_URL が未設定または誤設定です（プレースホルダーが残っています）。", file=sys.stderr)
+if "REPLACE_WITH" in _raw_url or "YOUR_DEPLOYMENT" in _raw_url:
+    print("[ERROR] GitHub Secrets の GAS_WEB_APP_URL が未設定または誤設定です（プレースホルダーが含まれています）。", file=sys.stderr)
     sys.exit(1)
-GAS_WEB_APP_URL: str = _gas_web_app_url
 
+GAS_WEB_APP_URL: str = _raw_url
 OUTPUT_PATH = Path(__file__).resolve().parent / "Docs" / "events.json"
 
 
 def fetch_events_from_gas() -> list[dict]:
-    url = f"{GAS_WEB_APP_URL}?action=getEvents"
+    url = GAS_WEB_APP_URL.rstrip("/") + "?action=getEvents"
     print(f"[INFO] アクセスURL: {url}")
 
     try:
