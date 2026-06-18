@@ -946,7 +946,8 @@ function bindRecurringEventForm() {
                 setCommFailureStatus(status, result);
                 return;
             }
-            setStatusText(status, buildDebugStatus(payload.action, payload, result));
+            form.reset();
+            setStatusText(status, "送信完了");
         } catch {
             setCommFailureStatus(status, {
                 url: getGasUrl(),

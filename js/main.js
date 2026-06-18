@@ -7,6 +7,7 @@ import { initGalleryPage } from "./gallery.js";
 import { initEquipmentPage, initAdminReturnAlerts } from "./equipment.js";
 import { initManagedEventsPage, initAdminCommunityForms, loadAllManagedEvents } from "./community-admin.js";
 import { initOpinionExchangePage, initAdminOpinionExchange } from "./opinion-exchange.js";
+import { gasGet } from "./gas-api.js";
 
 function setupNavigation() {
     const current = location.pathname.split("/").pop() || "index.html";
@@ -48,16 +49,6 @@ function parseEventDate(scheduleLabel) {
     return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function startOfDay(date) {
-    return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function addDays(date, days) {
-    const next = new Date(date);
-    next.setDate(next.getDate() + days);
-    return next;
-}
-
 function formatDateLabel(date) {
     const month = date.getMonth() + 1;
     const day = date.getDate();
@@ -74,31 +65,34 @@ function isCurrentMonth(date) {
     return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
 }
 
-function renderHomeNews(listEl, events) {
-    const today = startOfDay(new Date());
-    const weekEnd = addDays(today, 7);
+function normalizeTownEventForHome(event) {
+    const startValue = String(event?.start || "");
+    const date = startValue ? new Date(startValue) : null;
+    const pad = (n) => String(n).padStart(2, "0");
+    const scheduleLabel = date && !Number.isNaN(date.getTime())
+        ? `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+        : "日時未設定";
 
-    const weeklyEvents = events
-        .map((event) => ({
-            ...event,
-            date: parseEventDate(event.scheduleLabel),
-            sourceLabel: isCommunityEvent(event) ? "コミニティ" : "行事予定"
-        }))
-        .filter((event) => event.date && event.date >= today && event.date < weekEnd)
-        .sort((a, b) => a.date - b.date)
-        .slice(0, 8);
+    return {
+        id: String(event?.eventId || event?.id || ""),
+        type: "town",
+        title: String(event?.title || ""),
+        description: String(event?.description || ""),
+        scheduleLabel,
+        category: "町内行事",
+        sourceLabel: "町内行事",
+        date: date && !Number.isNaN(date.getTime()) ? date : null
+    };
+}
 
-    if (weeklyEvents.length === 0) {
-        listEl.innerHTML = "<li><strong>今週:</strong> 新しい行事予定はありません</li>";
-        return;
+async function loadTownEventsForHome() {
+    try {
+        const response = await gasGet({ type: "getTownEvents" });
+        const rows = Array.isArray(response?.data) ? response.data : (Array.isArray(response) ? response : []);
+        return rows.map(normalizeTownEventForHome).filter((event) => event.title && event.date);
+    } catch {
+        return [];
     }
-
-    listEl.innerHTML = "";
-    weeklyEvents.forEach((event) => {
-        const li = document.createElement("li");
-        li.innerHTML = `<strong>${formatDateLabel(event.date)}:</strong> [${event.sourceLabel}] ${event.title}`;
-        listEl.appendChild(li);
-    });
 }
 
 function renderHomeMonthlyEvents(statusEl, listEl, events) {
@@ -136,18 +130,23 @@ async function setupHomePage(config) {
         emergency.textContent = config?.emergency?.message || emergency.textContent;
     }
 
-    const newsList = document.getElementById("home-news-list");
     const monthlyStatus = document.getElementById("home-monthly-status");
     const monthlyList = document.getElementById("home-monthly-list");
-    if (!newsList) {
+    if (!monthlyList) {
         return;
     }
 
-    const events = await loadAllManagedEvents(config);
-    renderHomeNews(newsList, events);
-    if (monthlyList) {
-        renderHomeMonthlyEvents(monthlyStatus, monthlyList, events);
-    }
+    const [managedEvents, townEvents] = await Promise.all([
+        loadAllManagedEvents(config),
+        loadTownEventsForHome()
+    ]);
+    const communityEvents = Array.isArray(managedEvents) ? managedEvents : [];
+    const combinedEvents = [
+        ...townEvents,
+        ...communityEvents
+    ];
+
+    renderHomeMonthlyEvents(monthlyStatus, monthlyList, combinedEvents);
 }
 
 function setupDisasterPage(config) {
