@@ -43,6 +43,22 @@ RUNTIME_CONFIG_KEYS = [
 ]
 
 
+def load_env_file(env_path: Path) -> None:
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def should_ignore(path: Path) -> bool:
     if any(part in IGNORED_DIRS for part in path.parts):
         return True
@@ -79,7 +95,11 @@ def inject_runtime_config() -> None:
         for key in RUNTIME_CONFIG_KEYS
     }
     if not runtime_config["GAS_WEB_APP_URL"]:
-        raise RuntimeError("GAS_WEB_APP_URL が未設定です。GitHub Secrets の GAS_WEB_APP_URL を確認してください")
+        raise RuntimeError(
+            "GAS_WEB_APP_URL が未設定です。"
+            "ローカル検証では .env.local に GAS_WEB_APP_URL を設定するか、"
+            "環境変数 GAS_WEB_APP_URL を設定してから実行してください。"
+        )
     runtime_config_path = DIST / "js" / "runtime-config.js"
     runtime_config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -104,7 +124,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    _args = parse_args()
+    args = parse_args()
+    if args.mode == "local":
+        load_env_file(ROOT / ".env.local")
     copy_workspace()
     inject_runtime_config()
     print(f"[INFO] Built site to: {DIST}")

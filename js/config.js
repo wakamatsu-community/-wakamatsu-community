@@ -25,12 +25,8 @@ export const SITE_CONFIG = {
             eventsEditUrl: "https://docs.google.com/spreadsheets/d/sample-events-sheet-id/edit#gid=0",
             submitEndpoint: "https://script.google.com/macros/s/sample-events-script-id/exec",
             recruitSubmitEndpoint: "https://script.google.com/macros/s/sample-recruit-script-id/exec",
-            attendanceSubmitEndpoint: "https://script.google.com/macros/s/sample-attendance-script-id/exec",
-            categoriesSheetUrl: "https://docs.google.com/spreadsheets/d/sample-event-categories-sheet-id/gviz/tq?tqx=out:json",
-            categoriesEditUrl: "https://docs.google.com/spreadsheets/d/sample-event-categories-sheet-id/edit#gid=0",
-            categorySubmitEndpoint: "https://script.google.com/macros/s/sample-event-category-script-id/exec"
+            attendanceSubmitEndpoint: "https://script.google.com/macros/s/sample-attendance-script-id/exec"
         },
-        mockCategories: ["清掃", "会議", "ミニ集会", "セミナー", "防災", "コミニティ"],
         mockManagedEvents: [
             {
                 id: "EV-001",

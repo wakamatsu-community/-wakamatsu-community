@@ -38,6 +38,11 @@ jobs:
             exit 1
           fi
 
+      - name: Preflight check GAS endpoint (GET/POST)
+        env:
+          GAS_WEB_APP_URL: ${{ secrets['GAS_WEB_APP_URL'] }}
+        run: python scripts/check_gas_web_app.py
+
       - name: Build static files with injected runtime config
         env:
           GAS_WEB_APP_URL: ${{ secrets['GAS_WEB_APP_URL'] }}
@@ -51,6 +56,35 @@ jobs:
           FIREBASE_APP_ID: ${{ secrets['FIREBASE_APP_ID'] }}
           FIREBASE_MEASUREMENT_ID: ${{ secrets['FIREBASE_MEASUREMENT_ID'] }}
         run: python scripts/build_pages.py --mode ci
+
+      - name: Verify injected runtime config
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          path = Path("dist/js/runtime-config.js")
+          if not path.exists():
+              print("ERROR: dist/js/runtime-config.js not found")
+              sys.exit(1)
+
+          text = path.read_text(encoding="utf-8")
+          m = re.search(r"window\.RUNTIME_CONFIG\s*=\s*(\{.*?\})\s*;", text, re.S)
+          if not m:
+              print("ERROR: window.RUNTIME_CONFIG block not found in dist/js/runtime-config.js")
+              sys.exit(1)
+
+          cfg = json.loads(m.group(1))
+          gas = str(cfg.get("GAS_WEB_APP_URL", "")).strip()
+          if not gas:
+              print("ERROR: GAS_WEB_APP_URL was not injected into dist/js/runtime-config.js")
+              sys.exit(1)
+
+          print(f"OK: runtime config injected (GAS_WEB_APP_URL length={len(gas)})")
+          PY
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

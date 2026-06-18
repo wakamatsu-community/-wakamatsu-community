@@ -1,7 +1,6 @@
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
 
 const EVENTS_STORE_KEY = "wakamatsu_managed_events_v1";
-const EVENT_CATEGORIES_STORE_KEY = "wakamatsu_event_categories_v1";
 
 function isConfigured(url) {
     return Boolean(url && !url.includes("sample-"));
@@ -121,24 +120,6 @@ function saveLocalEvents(events) {
     localStorage.setItem(EVENTS_STORE_KEY, JSON.stringify(events));
 }
 
-function loadLocalCategories(config) {
-    const saved = localStorage.getItem(EVENT_CATEGORIES_STORE_KEY);
-    if (saved) {
-        try {
-            return JSON.parse(saved);
-        } catch {
-            localStorage.removeItem(EVENT_CATEGORIES_STORE_KEY);
-        }
-    }
-    const mock = config?.calendar?.mockCategories || [];
-    localStorage.setItem(EVENT_CATEGORIES_STORE_KEY, JSON.stringify(mock));
-    return mock;
-}
-
-function saveLocalCategories(categories) {
-    localStorage.setItem(EVENT_CATEGORIES_STORE_KEY, JSON.stringify(categories));
-}
-
 async function loadManagedEvents(config) {
     const rows = await fetchSheetRows(config?.calendar?.management?.eventsSheetUrl);
     if (!rows) {
@@ -166,22 +147,6 @@ async function loadManagedEvents(config) {
 
 export async function loadAllManagedEvents(config) {
     return loadManagedEvents(config);
-}
-
-async function loadEventCategories(config, events) {
-    const rows = await fetchSheetRows(config?.calendar?.management?.categoriesSheetUrl);
-    if (rows && rows.length > 0) {
-        const parsed = rows
-            .map((row) => String((row.c || [])[0]?.v || "").trim())
-            .filter(Boolean);
-        if (parsed.length > 0) {
-            return Array.from(new Set(parsed));
-        }
-    }
-
-    const local = loadLocalCategories(config);
-    const fromEvents = events.map((event) => event.category).filter(Boolean);
-    return Array.from(new Set([...local, ...fromEvents]));
 }
 
 function createManagedEventCard(event) {
@@ -369,16 +334,10 @@ function applyEventFilters() {
 
 function applyEventsSheetLink(config) {
     const eventsLink = document.getElementById("admin-events-sheet-link");
-    const categoryLink = document.getElementById("admin-event-categories-sheet-link");
 
     if (eventsLink) {
         eventsLink.href = config?.calendar?.management?.eventsEditUrl || "#";
         eventsLink.classList.toggle("disabled-link", eventsLink.href === "#");
-    }
-
-    if (categoryLink) {
-        categoryLink.href = config?.calendar?.management?.categoriesEditUrl || "#";
-        categoryLink.classList.toggle("disabled-link", categoryLink.href === "#");
     }
 }
 
@@ -1062,48 +1021,6 @@ function fileToDataUrl(file) {
     });
 }
 
-function bindCategoryForm(config) {
-    const form = document.getElementById("admin-event-category-form");
-    const status = document.getElementById("admin-event-category-status");
-    if (!form || !status) {
-        return;
-    }
-
-    form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        try {
-            const fd = new FormData(form);
-            const categoryName = String(fd.get("categoryName") || "").trim();
-
-            if (!categoryName) {
-                setStatusText(status, "通信試行終了（入力不足）");
-                return;
-            }
-
-            const payload = {
-                action: "addEventCategory",
-                categoryName,
-                createdAt: new Date().toISOString()
-            };
-
-            const result = await postToGas(payload);
-
-            if (!result.ok) {
-                setCommFailureStatus(status, result);
-                return;
-            }
-
-            setStatusText(status, buildDebugStatus(payload.action, payload, result));
-        } catch {
-            setCommFailureStatus(status, {
-                url: getGasUrl(),
-                status: 0,
-                error: "例外が発生しました。"
-            });
-        }
-    });
-}
-
 function bindDriveDocUploadForm(config) {
     const form = document.getElementById("admin-drive-doc-upload-form");
     const status = document.getElementById("admin-drive-doc-upload-status");
@@ -1246,7 +1163,7 @@ function bindAdminCalendarCreateFormStandalone(config) {
 
         const fd = new FormData(createForm);
         const payload = {
-            action: "addEvent",
+            action: "addTownEvent",
             title: String(fd.get("title") || "").trim(),
             start: String(fd.get("start") || ""),
             end: String(fd.get("end") || ""),
@@ -1372,11 +1289,6 @@ export function initAdminCommunityForms(config) {
         // テストモードではフォーム初期化失敗を無視する。
     }
 
-    try {
-        bindCategoryForm(config);
-    } catch {
-        // テストモードではフォーム初期化失敗を無視する。
-    }
     try {
         bindDriveDocUploadForm(config);
     } catch {

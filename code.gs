@@ -6,6 +6,7 @@ var LEDGER_SPREADSHEET_NAME = "福山市若松町内会_管理台帳";
 var TOWN_CALENDAR_ID = "replace-with-your-town-calendar-id@group.calendar.google.com";
 var EQUIPMENT_CALENDAR_ID = "replace-with-your-equipment-calendar-id@group.calendar.google.com";
 var GALLERY_FOLDER_ID = "replace-with-your-gallery-folder-id";
+var API_BUILD = "2026-06-18-post-enabled";
 
 var LEDGER_HEADERS = {
   "役員_会員台帳": [
@@ -50,6 +51,16 @@ var LEDGER_HEADERS = {
     "コメント/説明",
     "アルバム名/カテゴリ"
   ],
+  "町内行事予定": [
+    "イベントID",
+    "カレンダー予定ID",
+    "開始日時",
+    "終了日時",
+    "タイトル",
+    "企画者",
+    "場所",
+    "説明"
+  ],
   "イベント企画": [
     "イベントID",
     "カレンダー予定ID",
@@ -62,18 +73,12 @@ var LEDGER_HEADERS = {
     "最大人数",
     "説明"
   ],
-  "イベント参加者": [
+  "イベント参加": [
     "申込ID",
     "イベントID",
     "参加者名",
     "連絡先",
     "登録日時"
-  ],
-  "イベントカテゴリ": [
-    "カテゴリ名",
-    "作成日時",
-    "作成者",
-    "備考"
   ],
   "文書メタデータ": [
     "文書ID",
@@ -88,7 +93,13 @@ var LEDGER_HEADERS = {
 };
 
 var SHEET_NAME_ALIASES = {
-  "掲示板(意見交換": "掲示板(意見交換)"
+  "掲示板(意見交換": "掲示板(意見交換)",
+  "イベント管理": "イベント企画",
+  "イベント管理Sheet": "イベント企画",
+  "イベント管理シート": "イベント企画",
+  "町内会カレンダー": "町内行事予定",
+  "町内行事カレンダー": "町内行事予定",
+  "イベント参加者": "イベント参加"
 };
 
 // ============================================================
@@ -100,6 +111,22 @@ function doGet(e) {
     var action = (e && e.parameter && (e.parameter.action || e.parameter.type)) || "";
 
     switch (action) {
+      case "health":
+        return jsonResponse_({
+          ok: true,
+          action: action,
+          data: {
+            build: API_BUILD,
+            method: "GET",
+            hasDoPost: true,
+            supportedGet: ["health","login","getOpinions","getEvents","calendar_events","getGallery","getEquipment","equipment_status"],
+            supportedPost: [
+              "health","login","addOpinion","addTownEvent","addEvent","addRecurringEvent","joinEvent",
+              "reserveEquipment","uploadPhoto","addPeople","addEquipmentMaster",
+              "uploadDocument"
+            ]
+          }
+        });
       case "login":
         return jsonResponse_({ ok: true, action: action, data: login_(e.parameter || {}) });
       case "getOpinions":
@@ -137,10 +164,22 @@ function doPost(e) {
     var action = body.action || "";
 
     switch (action) {
+      case "health":
+        return jsonResponse_({
+          ok: true,
+          action: action,
+          data: {
+            build: API_BUILD,
+            method: "POST",
+            hasDoPost: true
+          }
+        });
       case "login":
         return jsonResponse_({ ok: true, action: action, data: login_(body) });
       case "addOpinion":
         return jsonResponse_({ ok: true, action: action, data: addOpinion_(body) });
+      case "addTownEvent":
+        return jsonResponse_({ ok: true, action: action, data: addTownEvent_(body) });
       case "addEvent":
         return jsonResponse_({ ok: true, action: action, data: addEvent_(body) });
       case "addRecurringEvent":
@@ -155,8 +194,6 @@ function doPost(e) {
         return jsonResponse_({ ok: true, action: action, data: addPeople_(body) });
       case "addEquipmentMaster":
         return jsonResponse_({ ok: true, action: action, data: addEquipmentMaster_(body) });
-      case "addEventCategory":
-        return jsonResponse_({ ok: true, action: action, data: addEventCategory_(body) });
       case "uploadDocument":
         return jsonResponse_({ ok: true, action: action, data: uploadDocument_(body) });
       default:
@@ -165,9 +202,9 @@ function doPost(e) {
           error: "未対応のactionです。",
           receivedAction: action,
           supportedActions: [
-            "login","addOpinion","addEvent","addRecurringEvent","joinEvent",
+            "login","addOpinion","addTownEvent","addEvent","addRecurringEvent","joinEvent",
             "reserveEquipment","uploadPhoto","addPeople","addEquipmentMaster",
-            "addEventCategory","uploadDocument"
+            "uploadDocument"
           ]
         });
     }
@@ -251,7 +288,7 @@ function getGallery_() {
 }
 
 function getCalendarEventsForFrontend_() {
-  var rows = readSheetAsObjects_("イベント企画");
+  var rows = readSheetAsObjects_("町内行事予定");
   return rows.map(function(row, index) {
     return {
       id: String(row["イベントID"] || "EV-" + index),
@@ -349,11 +386,63 @@ function addOpinion_(params) {
   }
 }
 
+function addTownEvent_(params) {
+  try {
+    var title       = String(params.title       || "").trim();
+    var start       = parseDateOrThrow_(params.start, "start");
+    var end         = parseDateOrNull_(params.end);
+    var place       = String(params.place       || "").trim();
+    var creator     = String(params.creator     || "").trim();
+    var description = String(params.description || "").trim();
+
+    if (!title) { throw new Error("title は必須です。"); }
+    if (!end) { end = new Date(start.getTime() + 60 * 60 * 1000); }
+    if (end.getTime() <= start.getTime()) { throw new Error("end は start より後の日時を指定してください。"); }
+
+    var calEventId = "";
+    var calendar = getCalendarSafely_(TOWN_CALENDAR_ID);
+    if (calendar) {
+      try {
+        var calEvent = calendar.createEvent(title, start, end, {
+          location: place,
+          description: description + (creator ? "\n企画者: " + creator : "")
+        });
+        calEventId = String(calEvent.getId() || "");
+      } catch (calendarErr) {
+        Logger.log("addTownEvent_: calendar.createEvent failed. " + String(calendarErr && calendarErr.message || calendarErr));
+      }
+    }
+
+    var eventId = "TC-" + new Date().getTime();
+    // イベントID, カレンダー予定ID, 開始日時, 終了日時, タイトル, 企画者, 場所, 説明
+    appendRow_("町内行事予定", [
+      eventId, calEventId,
+      Utilities.formatDate(start, Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
+      Utilities.formatDate(end,   Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
+      title, creator, place, description
+    ]);
+
+    return {
+      success: true,
+      eventId: eventId,
+      calendarEventId: calEventId,
+      calendarLinked: !!calEventId,
+      message: calEventId ? "カレンダーとシートに登録しました" : "シートに登録しました（カレンダー連携は未設定）"
+    };
+  } catch (err) {
+    return { success: false, error: String(err && err.message || err) };
+  }
+}
+
 function addEvent_(params) {
+  return addEventToSheet_(params, "イベント企画");
+}
+
+function addEventToSheet_(params, targetSheetName) {
   try {
     var title           = String(params.title       || "").trim();
     var start           = parseDateOrThrow_(params.start, "start");
-    var end             = parseDateOrThrow_(params.end,   "end");
+    var end             = parseDateOrNull_(params.end);
     var place           = String(params.place       || "").trim();
     var creator         = String(params.creator     || "").trim();
     var minParticipants = Number(params.minParticipants || 0);
@@ -361,27 +450,40 @@ function addEvent_(params) {
     var description     = String(params.description || "").trim();
 
     if (!title) { throw new Error("title は必須です。"); }
+    if (!end) { end = new Date(start.getTime() + 60 * 60 * 1000); }
     if (end.getTime() <= start.getTime()) { throw new Error("end は start より後の日時を指定してください。"); }
 
-    var calendar = CalendarApp.getCalendarById(TOWN_CALENDAR_ID);
-    if (!calendar) { throw new Error("指定カレンダーが見つかりません。TOWN_CALENDAR_ID を確認してください。"); }
-
-    var calEvent = calendar.createEvent(title, start, end, {
-      location: place,
-      description: description + (creator ? "\n企画者: " + creator : "")
-    });
+    var calEventId = "";
+    var calendar = getCalendarSafely_(TOWN_CALENDAR_ID);
+    if (calendar) {
+      try {
+        var calEvent = calendar.createEvent(title, start, end, {
+          location: place,
+          description: description + (creator ? "\n企画者: " + creator : "")
+        });
+        calEventId = String(calEvent.getId() || "");
+      } catch (calendarErr) {
+        Logger.log("addEvent_: calendar.createEvent failed, fallback to sheet-only save. " + String(calendarErr && calendarErr.message || calendarErr));
+      }
+    }
 
     var eventId = "EV-" + new Date().getTime();
     // イベントID, カレンダー予定ID, 開始日時, 終了日時, タイトル, 企画者, 場所, 最少人数, 最大人数, 説明
-    appendRow_("イベント企画", [
+    appendRow_(targetSheetName, [
       eventId,
-      String(calEvent.getId() || ""),
+      calEventId,
       Utilities.formatDate(start, Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
       Utilities.formatDate(end,   Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
       title, creator, place, minParticipants, maxParticipants, description
     ]);
 
-    return { success: true, eventId: eventId, calendarEventId: String(calEvent.getId() || "") };
+    return {
+      success: true,
+      eventId: eventId,
+      calendarEventId: calEventId,
+      calendarLinked: !!calEventId,
+      message: calEventId ? "カレンダーとシートに登録しました" : "シートに登録しました（カレンダー連携は未設定）"
+    };
   } catch (err) {
     return { success: false, error: String(err && err.message || err) };
   }
@@ -403,32 +505,50 @@ function addRecurringEvent_(params) {
     if (starts.length === 0) { throw new Error("定例日を計算できませんでした。パラメータを確認してください。"); }
     if (starts.length !== 12) { throw new Error("定例行事は12回分の日時が必要です。specificDates または条件を見直してください。"); }
 
-    var calendar = CalendarApp.getCalendarById(TOWN_CALENDAR_ID);
-    if (!calendar) { throw new Error("指定カレンダーが見つかりません。TOWN_CALENDAR_ID を確認してください。"); }
+    var calendar = getCalendarSafely_(TOWN_CALENDAR_ID);
 
     var spreadsheet = getLedgerSpreadsheet();
-    var sheet = getOrCreateSheet_(spreadsheet, "イベント企画");
+    var sheet = getOrCreateSheet_(spreadsheet, "町内行事予定");
     var createdIds = [];
     var createdCalendarIds = [];
+    var calendarLinkedCount = 0;
 
     starts.forEach(function(startDate) {
       var endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
-      var calEvent = calendar.createEvent(title, startDate, endDate, {
-        location: place,
-        description: description + (creator ? "\n企画者: " + creator : "")
-      });
+      var calEventId = "";
+      if (calendar) {
+        try {
+          var calEvent = calendar.createEvent(title, startDate, endDate, {
+            location: place,
+            description: description + (creator ? "\n企画者: " + creator : "")
+          });
+          calEventId = String(calEvent.getId() || "");
+        } catch (calendarErr) {
+          Logger.log("addRecurringEvent_: calendar.createEvent failed for " + Utilities.formatDate(startDate, Session.getScriptTimeZone(), "yyyy/MM/dd") + ". " + String(calendarErr && calendarErr.message || calendarErr));
+        }
+      }
       var eventId = "EV-" + startDate.getTime() + "-" + Math.floor(Math.random() * 1000);
       sheet.appendRow([
-        eventId, String(calEvent.getId() || ""),
+        eventId, calEventId,
         Utilities.formatDate(startDate, Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
         Utilities.formatDate(endDate,   Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
         title, creator, place, minParticipants, maxParticipants, description
       ]);
       createdIds.push(eventId);
-      createdCalendarIds.push(String(calEvent.getId() || ""));
+      createdCalendarIds.push(calEventId);
+      if (calEventId) { calendarLinkedCount += 1; }
     });
 
-    return { success: true, count: createdIds.length, eventIds: createdIds, calendarEventIds: createdCalendarIds };
+    return {
+      success: true,
+      count: createdIds.length,
+      eventIds: createdIds,
+      calendarEventIds: createdCalendarIds,
+      calendarLinkedCount: calendarLinkedCount,
+      message: calendarLinkedCount === createdIds.length
+        ? "定例行事をカレンダーとシートへ登録しました"
+        : "定例行事をシートへ登録しました（一部または全件でカレンダー連携は未設定）"
+    };
   } catch (err) {
     return { success: false, error: String(err && err.message || err) };
   }
@@ -451,7 +571,7 @@ function joinEvent_(params) {
     if (!targetEvent) { throw new Error("指定イベントが見つかりません: " + eventId); }
 
     var maxParticipants = Number(targetEvent["最大人数"] || 0);
-    var joinRows        = readSheetAsObjects_("イベント参加者");
+    var joinRows        = readSheetAsObjects_("イベント参加");
     var currentCount    = joinRows.filter(function(row) {
       return String(row["イベントID"] || "").trim() === eventId;
     }).length;
@@ -460,7 +580,7 @@ function joinEvent_(params) {
       return { success: false, message: "定員に達したため参加登録できません" };
     }
 
-    var participantSheet = getOrCreateSheet_(spreadsheet, "イベント参加者");
+    var participantSheet = getOrCreateSheet_(spreadsheet, "イベント参加");
     // 申込ID, イベントID, 参加者名, 連絡先, 登録日時
     participantSheet.appendRow([
       "EN-" + new Date().getTime(), eventId, name, contact,
@@ -612,23 +732,6 @@ function addEquipmentMaster_(params) {
   }
 }
 
-function addEventCategory_(params) {
-  try {
-    var categoryName = String(params.categoryName || params.name || "").trim();
-    var creator      = String(params.creator      || "").trim();
-    var note         = String(params.note || params.memo || "").trim();
-
-    if (!categoryName) { throw new Error("categoryName は必須です。"); }
-
-    var createdAt = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss");
-    // カテゴリ名, 作成日時, 作成者, 備考
-    appendRow_("イベントカテゴリ", [categoryName, createdAt, creator, note]);
-    return { success: true, message: "イベントカテゴリへ登録しました" };
-  } catch (err) {
-    return { success: false, error: String(err && err.message || err) };
-  }
-}
-
 function uploadDocument_(params) {
   try {
     var destination  = String(params.destination  || "documents").trim();
@@ -763,6 +866,17 @@ function parseDateOrNull_(value) {
   if (Object.prototype.toString.call(value) === "[object Date]" && !isNaN(value)) { return value; }
   var date = new Date(value);
   return isNaN(date.getTime()) ? null : date;
+}
+
+function getCalendarSafely_(calendarId) {
+  var id = String(calendarId || "").trim();
+  if (!id || id.indexOf("replace-with-your-") >= 0) { return null; }
+  try {
+    return CalendarApp.getCalendarById(id);
+  } catch (err) {
+    Logger.log("getCalendarSafely_: failed to open calendar. " + String(err && err.message || err));
+    return null;
+  }
 }
 
 function toIso_(date) {

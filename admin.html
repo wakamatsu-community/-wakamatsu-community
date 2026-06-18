@@ -74,8 +74,7 @@
             <section id="admin-events-section" class="card">
                 <h2>行事管理（定例・追加イベント）</h2>
                 <div class="button-row">
-                    <a id="admin-events-sheet-link" class="button-link" href="#" target="_blank" rel="noopener noreferrer">イベント管理Sheet</a>
-                    <a id="admin-event-categories-sheet-link" class="button-link" href="#" target="_blank" rel="noopener noreferrer">カテゴリ管理Sheet</a>
+                    <a id="admin-events-sheet-link" class="button-link" href="#" target="_blank" rel="noopener noreferrer">町内行事予定Sheet</a>
                 </div>
 
                 <form id="admin-calendar-create-form" class="inline-form card sub-card calendar-create-form-grid">
@@ -101,6 +100,52 @@
                     </label>
                     <button class="button" type="submit">町内会カレンダーへ登録</button>
                     <p id="admin-calendar-create-status" class="note" aria-live="polite"></p>
+                </form>
+
+                <form id="admin-recurring-event-form" class="inline-form card sub-card">
+                    <h3>定例行事を年間一括登録（12か月分）</h3>
+                    <p class="note">入力した条件で、今月から12か月分の定例予定を一括で登録します。</p>
+                    <label>行事名
+                        <input name="title" type="text" placeholder="例: 月例清掃" required>
+                    </label>
+                    <label>カテゴリ
+                        <input name="category" type="text" placeholder="例: 清掃" required>
+                    </label>
+                    <label>場所
+                        <input name="place" type="text" placeholder="例: 町内全域" required>
+                    </label>
+                    <label>毎月の何週目
+                        <select name="weekOfMonth" required>
+                            <option value="1">第1週</option>
+                            <option value="2">第2週</option>
+                            <option value="3">第3週</option>
+                            <option value="4">第4週</option>
+                            <option value="5">第5週</option>
+                            <option value="last">最終週</option>
+                        </select>
+                    </label>
+                    <label>曜日
+                        <select name="dayOfWeek" required>
+                            <option value="0">日曜</option>
+                            <option value="1">月曜</option>
+                            <option value="2">火曜</option>
+                            <option value="3">水曜</option>
+                            <option value="4">木曜</option>
+                            <option value="5">金曜</option>
+                            <option value="6">土曜</option>
+                        </select>
+                    </label>
+                    <label>開始時刻
+                        <input name="startTime" type="time" value="09:00" required>
+                    </label>
+                    <label>終了時刻
+                        <input name="endTime" type="time" value="10:00" required>
+                    </label>
+                    <label>補足説明
+                        <textarea name="description" placeholder="持ち物・集合案内など"></textarea>
+                    </label>
+                    <button class="button" type="submit">年間一括登録（12件）</button>
+                    <p id="admin-recurring-event-status" class="note" aria-live="polite"></p>
                 </form>
 
             </section>

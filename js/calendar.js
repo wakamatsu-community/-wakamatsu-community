@@ -211,7 +211,7 @@ async function saveTownCalendarEvent(formData) {
 
     try {
         const response = await gasPost({
-            action: "addEvent",
+            action: "addTownEvent",
             title,
             start: event.start,
             end: event.end || event.start,
