@@ -102,13 +102,13 @@ function toQueryString(params = {}) {
 }
 
 export async function gasGet(params = {}) {
-    const query = toQueryString(params);
+    const query = toQueryString({ ...params, _ts: Date.now() });
     const baseUrl = resolveGasUrl();
     if (!baseUrl) {
         throwGasUrlNotConfigured();
     }
     const url = query ? `${baseUrl}?${query}` : baseUrl;
-    const response = await fetch(url, { method: "GET" });
+    const response = await fetch(url, { method: "GET", cache: "no-store" });
     if (!response.ok) {
         throw new Error(`GAS GET failed: ${response.status}`);
     }
@@ -134,6 +134,7 @@ export async function gasPost(payload = {}) {
     }
     const response = await fetch(url, {
         method: "POST",
+        cache: "no-store",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify(payload)
     });

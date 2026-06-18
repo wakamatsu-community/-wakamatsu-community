@@ -16,7 +16,7 @@ async function fetchSheetRows(url) {
         return null;
     }
     try {
-        const res = await fetch(url);
+        const res = await fetch(url, { cache: "no-store" });
         const data = parseGvizJson(await res.text());
         return data?.table?.rows || [];
     } catch {
@@ -120,7 +120,49 @@ function saveLocalEvents(events) {
     localStorage.setItem(EVENTS_STORE_KEY, JSON.stringify(events));
 }
 
+function normalizeManagedEventsFromGas(payload) {
+    const rows = Array.isArray(payload?.data?.data)
+        ? payload.data.data
+        : Array.isArray(payload?.data)
+            ? payload.data
+            : Array.isArray(payload)
+                ? payload
+                : [];
+
+    return rows
+        .map((row, index) => {
+            const start = toDatetimeLocalValue(row?.["開始日時"] || row?.start || "");
+            const end = toDatetimeLocalValue(row?.["終了日時"] || row?.end || "");
+            return {
+                id: String(row?.["イベントID"] || row?.id || `EV-${index}`),
+                type: "special",
+                title: String(row?.["タイトル"] || row?.title || ""),
+                category: String(row?.category || "コミニティ"),
+                scheduleLabel: formatScheduleLabelFromRange(start, end),
+                place: String(row?.["場所"] || row?.place || ""),
+                description: String(row?.["説明"] || row?.description || ""),
+                minParticipants: Number(row?.["最少人数"] || row?.minParticipants || 0),
+                maxParticipants: Number(row?.["最大人数"] || row?.maxParticipants || 0),
+                start: start ? new Date(start).toISOString() : "",
+                end: end ? new Date(end).toISOString() : "",
+                recruitFormUrl: ""
+            };
+        })
+        .filter((event) => event.title);
+}
+
 async function loadManagedEvents(config) {
+    try {
+        const payload = await gasGet({ type: "getEvents" });
+        const parsedFromGas = normalizeManagedEventsFromGas(payload);
+        if (parsedFromGas.length > 0) {
+            saveLocalEvents(parsedFromGas);
+            return parsedFromGas;
+        }
+    } catch {
+        // GAS取得失敗時のみ下のフォールバックへ進む
+    }
+
     const rows = await fetchSheetRows(config?.calendar?.management?.eventsSheetUrl);
     if (!rows) {
         return loadLocalEvents(config);
@@ -142,7 +184,12 @@ async function loadManagedEvents(config) {
         })
         .filter((event) => event.title);
 
-    return parsed.length > 0 ? parsed : loadLocalEvents(config);
+    if (parsed.length > 0) {
+        saveLocalEvents(parsed);
+        return parsed;
+    }
+
+    return loadLocalEvents(config);
 }
 
 export async function loadAllManagedEvents(config) {

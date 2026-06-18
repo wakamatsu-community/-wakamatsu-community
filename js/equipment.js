@@ -50,7 +50,7 @@ async function fetchSheetRows(url) {
         return null;
     }
     try {
-        const res = await fetch(url);
+        const res = await fetch(url, { cache: "no-store" });
         const text = await res.text();
         const data = parseGvizJson(text);
         return data?.table?.rows || [];
@@ -93,6 +93,30 @@ function toFlatReservationItems(sourceList) {
 }
 
 async function loadEquipmentItems(config) {
+    try {
+        const payload = await gasGet({ type: "getEquipment" });
+        const masters = Array.isArray(payload?.data?.masters)
+            ? payload.data.masters
+            : Array.isArray(payload?.masters)
+                ? payload.masters
+                : [];
+
+        const parsedFromGas = masters
+            .map((row, index) => ({
+                id: String(row?.["備品ID"] || row?.id || `EQ-${index + 1}`).trim(),
+                label: String(row?.["備品名"] || row?.label || "").trim(),
+                stock: Number(row?.["総在庫数"] || row?.stock || 1),
+                aliases: String(row?.aliases || "").split(",").map((x) => x.trim()).filter(Boolean)
+            }))
+            .filter((item) => item.id && item.label);
+
+        if (parsedFromGas.length > 0) {
+            return parsedFromGas;
+        }
+    } catch {
+        // GAS取得失敗時のみ下のフォールバックへ進む
+    }
+
     const rows = await fetchSheetRows(config?.equipment?.sheets?.masterSheetUrl);
     if (!rows) {
         return config?.equipment?.items || [];
