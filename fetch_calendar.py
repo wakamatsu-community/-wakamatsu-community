@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-GAS_WEB_APP_URL = "https://script.google.com/macros/s/REPLACE_WITH_YOUR_DEPLOYMENT_ID/exec"
+_gas_web_app_url = os.environ.get("GAS_WEB_APP_URL")
+if not _gas_web_app_url:
+    print("[ERROR] 環境変数 GAS_WEB_APP_URL が未設定です。GitHubシークレットを確認してください。", file=sys.stderr)
+    sys.exit(1)
+GAS_WEB_APP_URL: str = _gas_web_app_url
+
 OUTPUT_PATH = Path(__file__).resolve().parent / "Docs" / "events.json"
 
 

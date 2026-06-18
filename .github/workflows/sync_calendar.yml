@@ -29,6 +29,7 @@ jobs:
     - name: Run fetch script
       env:
         # 🟢 GitHubシークレットをプログラムの環境変数に自動注入します
+        GAS_WEB_APP_URL: ${{ secrets.GAS_WEB_APP_URL }}
         GOOGLE_CALENDAR_API_KEY: ${{ secrets['GOOGLE_CALENDAR_API_KEY'] }}
         GOOGLE_CALENDAR_ID: ${{ secrets['GOOGLE_CALENDAR_ID'] }}
         GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets['GOOGLE_SERVICE_ACCOUNT_KEY'] }}
