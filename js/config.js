@@ -26,39 +26,7 @@ export const SITE_CONFIG = {
             submitEndpoint: "https://script.google.com/macros/s/sample-events-script-id/exec",
             recruitSubmitEndpoint: "https://script.google.com/macros/s/sample-recruit-script-id/exec",
             attendanceSubmitEndpoint: "https://script.google.com/macros/s/sample-attendance-script-id/exec"
-        },
-        mockManagedEvents: [
-            {
-                id: "EV-001",
-                type: "recurring",
-                title: "月例清掃",
-                category: "清掃",
-                scheduleLabel: "毎月第1日曜 8:00",
-                place: "若松町内全域",
-                description: "町内清掃活動",
-                recruitFormUrl: "https://forms.gle/sample-cleanup-recruit"
-            },
-            {
-                id: "EV-002",
-                type: "special",
-                title: "コミニティ 6月講座",
-                category: "コミニティ",
-                scheduleLabel: "2026-07-12 10:00",
-                place: "若松集会所",
-                description: "防災をテーマにしたコミニティ講座です。初参加の方も歓迎します。",
-                recruitFormUrl: "https://forms.gle/sample-seminar-recruit"
-            },
-            {
-                id: "EV-003",
-                type: "special",
-                title: "コミニティ 7月講座",
-                category: "コミニティ",
-                scheduleLabel: "2026-07-26 10:00",
-                place: "若松集会所",
-                description: "地域交流と防災知識を学ぶコミニティ講座です。",
-                recruitFormUrl: "https://forms.gle/sample-seminar-recruit"
-            }
-        ]
+        }
     },
 
     // ------------------------------------------------------------------
@@ -223,29 +191,16 @@ export const SITE_CONFIG = {
             uploadEndpoint: "https://script.google.com/macros/s/sample-gallery-upload-script-id/exec"
         },
         destinations: [
-            { id: "community-rose", label: "コミュニティ_バラ園管理", folderId: "sample-community-rose-folder-id" },
-            { id: "community-general", label: "コミュニティ_区分なし", folderId: "sample-community-general-folder-id" },
-            { id: "archive", label: "アーカイブ", folderId: "sample-archive-folder-id" }
+            { id: "shared", label: "共有", folderId: "1uSlpwLAFa1gbBrD18Mn_apKyZ6dhAlcw" },
+            { id: "archive", label: "アーカイブ", folderId: "18SHRujU2DtAe0Fdao_Lt6WWpCM53ICE3" }
         ],
         albums: [
             {
-                title: "バラ園管理",
-                year: "2026",
-                coverEmoji: "🌹",
-                description: "コミュニティ活動（バラ園管理）の記録です。",
-                driveFolderId: "sample-community-rose-folder-id",
-                mockPhotos: [
-                    { title: "花壇整備" },
-                    { title: "剪定作業" },
-                    { title: "水やり" }
-                ]
-            },
-            {
-                title: "区分なし",
+                title: "共有",
                 year: "2026",
                 coverEmoji: "📷",
-                description: "コミュニティ活動（区分なし）の写真です。",
-                driveFolderId: "sample-community-general-folder-id",
+                description: "町内会活動の共有写真です。",
+                driveFolderId: "1uSlpwLAFa1gbBrD18Mn_apKyZ6dhAlcw",
                 mockPhotos: [
                     { title: "活動風景1" },
                     { title: "活動風景2" }
@@ -256,7 +211,7 @@ export const SITE_CONFIG = {
                 year: "2026",
                 coverEmoji: "🗂️",
                 description: "過去写真の保管用アルバムです。",
-                driveFolderId: "sample-archive-folder-id",
+                driveFolderId: "18SHRujU2DtAe0Fdao_Lt6WWpCM53ICE3",
                 mockPhotos: [
                     { title: "過去活動記録" }
                 ]

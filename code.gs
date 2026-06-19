@@ -5,7 +5,10 @@
 var LEDGER_SPREADSHEET_NAME = "福山市若松町内会_管理台帳";
 var TOWN_CALENDAR_ID = "replace-with-your-town-calendar-id@group.calendar.google.com";
 var EQUIPMENT_CALENDAR_ID = "replace-with-your-equipment-calendar-id@group.calendar.google.com";
-var GALLERY_FOLDER_ID = "replace-with-your-gallery-folder-id";
+var GALLERY_FOLDER_ID = "1uSlpwLAFa1gbBrD18Mn_apKyZ6dhAlcw";
+var GALLERY_SHARED_FOLDER_ID = "1uSlpwLAFa1gbBrD18Mn_apKyZ6dhAlcw";
+var GALLERY_ARCHIVE_FOLDER_ID = "18SHRujU2DtAe0Fdao_Lt6WWpCM53ICE3";
+var PHOTO_ARCHIVE_DAYS = 365;
 var API_BUILD = "2026-06-18-post-enabled";
 
 var LEDGER_HEADERS = {
@@ -49,7 +52,10 @@ var LEDGER_HEADERS = {
     "投稿日",
     "投稿者氏名",
     "コメント/説明",
-    "アルバム名/カテゴリ"
+    "アルバム名/カテゴリ",
+    "ファイル名",
+    "保管状態",
+    "アーカイブ日時"
   ],
   "町内行事予定": [
     "イベントID",
@@ -123,7 +129,7 @@ function doGet(e) {
             supportedPost: [
               "health","login","addOpinion","addTownEvent","updateTownEvent","deleteTownEvent",
               "addEvent","addRecurringEvent","joinEvent",
-              "reserveEquipment","uploadPhoto","addPeople","addEquipmentMaster",
+              "reserveEquipment","uploadPhoto","createPhotoFolder","addPeople","addEquipmentMaster",
               "uploadDocument"
             ]
           }
@@ -197,6 +203,8 @@ function doPost(e) {
         return jsonResponse_({ ok: true, action: action, data: reserveEquipment_(body) });
       case "uploadPhoto":
         return jsonResponse_({ ok: true, action: action, data: uploadPhoto_(body) });
+      case "createPhotoFolder":
+        return jsonResponse_({ ok: true, action: action, data: createPhotoFolder_(body) });
       case "addPeople":
         return jsonResponse_({ ok: true, action: action, data: addPeople_(body) });
       case "addEquipmentMaster":
@@ -211,7 +219,7 @@ function doPost(e) {
           supportedActions: [
             "login","addOpinion","addTownEvent","updateTownEvent","deleteTownEvent",
             "addEvent","addRecurringEvent","joinEvent",
-            "reserveEquipment","uploadPhoto","addPeople","addEquipmentMaster",
+            "reserveEquipment","uploadPhoto","createPhotoFolder","addPeople","addEquipmentMaster",
             "uploadDocument"
           ]
         });
@@ -769,8 +777,10 @@ function uploadPhoto_(params) {
     var uploader     = String(params.uploader  || params.uploaderName || params.authorName || "").trim();
     var comment      = String(params.comment   || params.description || "").trim();
     var album        = String(params.album     || params.category    || "").trim();
+    var targetFolderId = String(params.folderId || album || resolveSharedPhotoFolderId_() || "").trim();
 
     if (!photoDataRaw) { throw new Error("photoData は必須です。"); }
+    if (!targetFolderId) { throw new Error("folderId（保存先フォルダID）は必須です。"); }
 
     var match      = photoDataRaw.match(/^data:([^;]+);base64,(.*)$/i);
     var mimeType   = match ? match[1] : (String(params.mimeType || "").trim() || "image/jpeg");
@@ -778,7 +788,7 @@ function uploadPhoto_(params) {
     var bytes      = Utilities.base64Decode(base64Body);
     var blob       = Utilities.newBlob(bytes, mimeType, fileName || ("photo_" + generateId_("IMG") + ".jpg"));
 
-    var folder = DriveApp.getFolderById(GALLERY_FOLDER_ID);
+    var folder = DriveApp.getFolderById(targetFolderId);
     var file   = folder.createFile(blob);
     file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
@@ -786,10 +796,54 @@ function uploadPhoto_(params) {
     var imageUrl = "https://drive.google.com/uc?export=view&id=" + fileId;
     var photoId  = "PH-" + new Date().getTime();
     var postedAt = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
+    var albumForSheet = album || targetFolderId;
+    var archiveFolderId = resolveArchivePhotoFolderId_();
+    var storageStatus = archiveFolderId && albumForSheet === archiveFolderId ? "アーカイブ済" : "共有中";
+    var archivedAt = storageStatus === "アーカイブ済" ? nowIso_() : "";
 
-    // 写真ID, ドライブのファイルID, 画像URL, 投稿日, 投稿者氏名, コメント/説明, アルバム名/カテゴリ
-    appendRow_("写真メタデータ", [photoId, fileId, imageUrl, postedAt, uploader, comment, album]);
-    return { success: true, message: "写真のアップロードが完了しました" };
+    // 写真ID, ドライブのファイルID, 画像URL, 投稿日, 投稿者氏名, コメント/説明, アルバム名/カテゴリ, ファイル名, 保管状態, アーカイブ日時
+    appendRow_("写真メタデータ", [
+      photoId,
+      fileId,
+      imageUrl,
+      postedAt,
+      uploader,
+      comment,
+      albumForSheet,
+      fileName || file.getName(),
+      storageStatus,
+      archivedAt
+    ]);
+    return {
+      success: true,
+      message: "写真のアップロードが完了しました",
+      fileId: fileId,
+      folderId: targetFolderId
+    };
+  } catch (err) {
+    return { success: false, error: String(err && err.message || err) };
+  }
+}
+
+function createPhotoFolder_(params) {
+  try {
+    var folderName = String(params.folderName || params.name || "").trim();
+    var parentFolderId = String(params.parentFolderId || resolvePhotoRootFolderId_() || "").trim();
+
+    if (!folderName) { throw new Error("folderName は必須です。"); }
+    if (!parentFolderId) { throw new Error("parentFolderId が未設定です。共有フォルダIDを設定してください。"); }
+
+    var parent = DriveApp.getFolderById(parentFolderId);
+    var child = parent.createFolder(folderName);
+
+    return {
+      success: true,
+      message: "写真用フォルダを作成しました",
+      folderId: child.getId(),
+      folderName: child.getName(),
+      parentFolderId: parentFolderId,
+      folderUrl: child.getUrl()
+    };
   } catch (err) {
     return { success: false, error: String(err && err.message || err) };
   }
@@ -893,6 +947,116 @@ function appendRow_(sheetName, rowValues) {
   sheet.appendRow(rowValues);
 }
 
+function runPhotoArchiveJob() {
+  return autoArchiveOldPhotos_();
+}
+
+function setupPhotoArchiveTrigger_() {
+  deleteTriggersByHandler_("runPhotoArchiveJob");
+  ScriptApp.newTrigger("runPhotoArchiveJob")
+    .timeBased()
+    .everyDays(1)
+    .atHour(2)
+    .create();
+  return { success: true, message: "写真アーカイブの定期トリガーを設定しました（毎日2時）" };
+}
+
+function autoArchiveOldPhotos_() {
+  ensureLedgerStructure_();
+
+  var archiveFolderId = resolveArchivePhotoFolderId_();
+  if (!archiveFolderId) {
+    return { success: false, error: "GALLERY_ARCHIVE_FOLDER_ID を設定してください。" };
+  }
+
+  var spreadsheet = getLedgerSpreadsheet();
+  var sheet = getOrCreateSheet_(spreadsheet, "写真メタデータ");
+  var values = sheet.getDataRange().getValues();
+  if (!values || values.length <= 1) {
+    return { success: true, checked: 0, archived: 0, skipped: 0, failed: 0 };
+  }
+
+  var headers = values[0].map(function(v) { return String(v || "").trim(); });
+  var indexMap = {};
+  headers.forEach(function(h, i) { indexMap[h] = i; });
+
+  var idxFileId = indexMap["ドライブのファイルID"];
+  var idxPostedAt = indexMap["投稿日"];
+  var idxAlbum = indexMap["アルバム名/カテゴリ"];
+  var idxFileName = indexMap["ファイル名"];
+  var idxStorage = indexMap["保管状態"];
+  var idxArchivedAt = indexMap["アーカイブ日時"];
+
+  if (idxFileId === undefined || idxPostedAt === undefined || idxAlbum === undefined) {
+    return { success: false, error: "写真メタデータの必須列が不足しています。" };
+  }
+
+  var threshold = new Date();
+  threshold.setHours(0, 0, 0, 0);
+  threshold.setDate(threshold.getDate() - Number(PHOTO_ARCHIVE_DAYS || 365));
+
+  var archiveFolder = DriveApp.getFolderById(archiveFolderId);
+  var checked = 0;
+  var archived = 0;
+  var skipped = 0;
+  var failed = 0;
+
+  for (var rowNum = 2; rowNum <= values.length; rowNum++) {
+    checked += 1;
+    var row = values[rowNum - 1];
+
+    var fileId = String(row[idxFileId] || "").trim();
+    var postedAtRaw = row[idxPostedAt];
+    var currentAlbum = String(row[idxAlbum] || "").trim();
+    var currentStatus = idxStorage === undefined ? "" : String(row[idxStorage] || "").trim();
+
+    if (!fileId) { skipped += 1; continue; }
+    if (currentAlbum === archiveFolderId || currentStatus === "アーカイブ済") { skipped += 1; continue; }
+
+    var postedAt = parseDateOrNull_(postedAtRaw);
+    if (!postedAt) { skipped += 1; continue; }
+    postedAt.setHours(0, 0, 0, 0);
+    if (postedAt.getTime() > threshold.getTime()) { skipped += 1; continue; }
+
+    try {
+      var file = DriveApp.getFileById(fileId);
+      var archivedCopy = archiveFolder.createFile(file.getBlob());
+      archivedCopy.setName(file.getName());
+      archivedCopy.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+      var archivedFileId = archivedCopy.getId();
+      var archivedUrl = archivedCopy.getUrl();
+
+      try {
+        file.setTrashed(true);
+      } catch (trashErr) {
+        Logger.log("autoArchiveOldPhotos_: setTrashed failed. row=" + rowNum + " / " + String(trashErr && trashErr.message || trashErr));
+      }
+
+      sheet.getRange(rowNum, idxFileId + 1).setValue(archivedFileId);
+      sheet.getRange(rowNum, idxAlbum + 1).setValue(archiveFolderId);
+      if (idxFileName !== undefined) { sheet.getRange(rowNum, idxFileName + 1).setValue(file.getName()); }
+      if (idxStorage !== undefined) { sheet.getRange(rowNum, idxStorage + 1).setValue("アーカイブ済"); }
+      if (idxArchivedAt !== undefined) { sheet.getRange(rowNum, idxArchivedAt + 1).setValue(nowIso_()); }
+
+      archived += 1;
+    } catch (err) {
+      failed += 1;
+      Logger.log("autoArchiveOldPhotos_ failed: row=" + rowNum + " / " + String(err && err.message || err));
+    }
+  }
+
+  return {
+    success: true,
+    checked: checked,
+    archived: archived,
+    skipped: skipped,
+    failed: failed,
+    archiveFolderId: archiveFolderId,
+    thresholdDate: toDate_(threshold)
+  };
+}
+
 function parsePostJson_(e) {
   var raw  = (e && e.postData && e.postData.contents) ? e.postData.contents : "{}";
   var body = {};
@@ -966,6 +1130,34 @@ function parseDateOrNull_(value) {
   if (Object.prototype.toString.call(value) === "[object Date]" && !isNaN(value)) { return value; }
   var date = new Date(value);
   return isNaN(date.getTime()) ? null : date;
+}
+
+function isPlaceholderFolderId_(value) {
+  var id = String(value || "").trim();
+  return !id || id.indexOf("replace-with-your-") === 0 || id.indexOf("sample-") === 0;
+}
+
+function resolveSharedPhotoFolderId_() {
+  if (!isPlaceholderFolderId_(GALLERY_SHARED_FOLDER_ID)) { return String(GALLERY_SHARED_FOLDER_ID).trim(); }
+  if (!isPlaceholderFolderId_(GALLERY_FOLDER_ID)) { return String(GALLERY_FOLDER_ID).trim(); }
+  return "";
+}
+
+function resolvePhotoRootFolderId_() {
+  return resolveSharedPhotoFolderId_();
+}
+
+function resolveArchivePhotoFolderId_() {
+  if (!isPlaceholderFolderId_(GALLERY_ARCHIVE_FOLDER_ID)) { return String(GALLERY_ARCHIVE_FOLDER_ID).trim(); }
+  return "";
+}
+
+function deleteTriggersByHandler_(handlerName) {
+  ScriptApp.getProjectTriggers().forEach(function(trigger) {
+    if (trigger.getHandlerFunction && trigger.getHandlerFunction() === handlerName) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
 }
 
 function getCalendarSafely_(calendarId) {

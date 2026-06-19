@@ -63,7 +63,7 @@ async function getDrivePhotos(config, folderId) {
             return album === String(folderId).trim();
         }).map((row) => ({
             id: String(row?.["ドライブのファイルID"] || ""),
-            title: String(row?.["写真ID"] || "写真"),
+            title: String(row?.["ファイル名"] || row?.["写真ID"] || "写真"),
             comment: String(row?.["コメント/説明"] || ""),
             viewUrl: String(row?.["画像URL"] || ""),
             downloadUrl: String(row?.["画像URL"] || ""),
@@ -211,6 +211,7 @@ async function uploadPhotosToDrive(config, payload) {
                 fileName: file.name,
                 mimeType: file.type || "image/jpeg",
                 photoData: fileData,
+                folderId: payload.folderId,
                 uploaderName: payload.uploaderName,
                 comment: payload.comment,
                 album: payload.folderId
@@ -258,6 +259,54 @@ function fileToDataUrl(file) {
     });
 }
 
+async function createGalleryFolder(payload) {
+    const requestUrl = getGasUrl();
+
+    try {
+        const response = await gasPost({
+            action: "createPhotoFolder",
+            folderName: payload.folderName,
+            parentFolderId: payload.parentFolderId,
+            uploaderName: payload.uploaderName
+        });
+
+        const data = (response && typeof response.data === "object" && response.data) ? response.data : response;
+        const hasBusinessError = data && (
+            data.ok === false
+            || data.success === false
+            || data.result === false
+            || data.isError === true
+            || Boolean(data.error)
+        );
+        if (hasBusinessError) {
+            return {
+                ok: false,
+                url: String(response?._requestUrl || requestUrl),
+                status: Number(response?._httpStatus || 200),
+                error: String(data?.error || data?.message || "フォルダ作成に失敗しました。"),
+                folderId: ""
+            };
+        }
+
+        return {
+            ok: true,
+            url: String(response?._requestUrl || requestUrl),
+            status: Number(response?._httpStatus || 200),
+            error: "",
+            folderId: String(data?.folderId || ""),
+            folderName: String(data?.folderName || payload.folderName || "")
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            url: requestUrl,
+            status: 0,
+            error: String(error && error.message || error),
+            folderId: ""
+        };
+    }
+}
+
 function bindGalleryUploadForm(config, onUploaded) {
     const form = document.getElementById("gallery-upload-form");
     const destinationSelect = document.getElementById("gallery-destination");
@@ -288,7 +337,7 @@ function bindGalleryUploadForm(config, onUploaded) {
 
         const uploaderName = String(fd.get("uploaderName") || "").trim();
         const destination = String(fd.get("destination") || "");
-        const folderName = String(fd.get("newFolderName") || "").trim();
+        const newFolderName = String(fd.get("newFolderName") || "").trim();
         const comment = String(fd.get("comment") || "").trim();
         const files = (fd.getAll("photos") || []).filter((f) => f instanceof File && f.size > 0);
 
@@ -299,11 +348,22 @@ function bindGalleryUploadForm(config, onUploaded) {
 
         let folderId = "";
         if (destination === "new") {
-            if (!folderName) {
+            if (!newFolderName) {
                 status.textContent = "新規フォルダ名を入力してください。";
                 return;
             }
-            folderId = folderName;
+
+            const sharedDestination = destinations.find((d) => d.id === "shared");
+            const created = await createGalleryFolder({
+                folderName: newFolderName,
+                parentFolderId: String(sharedDestination?.folderId || "").trim(),
+                uploaderName
+            });
+            if (!created.ok || !created.folderId) {
+                status.textContent = `【フォルダ作成失敗】URL: ${created.url} | エラー内容: HTTP=${created.status || "N/A"} / ${created.error}`;
+                return;
+            }
+            folderId = created.folderId;
         } else {
             const matched = destinations.find((d) => d.id === destination);
             folderId = matched?.folderId || "";

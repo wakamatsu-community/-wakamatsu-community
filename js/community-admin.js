@@ -103,17 +103,8 @@ function setCommFailureStatus(statusEl, result) {
 }
 
 function loadLocalEvents(config) {
-    const saved = localStorage.getItem(EVENTS_STORE_KEY);
-    if (saved) {
-        try {
-            return JSON.parse(saved);
-        } catch {
-            localStorage.removeItem(EVENTS_STORE_KEY);
-        }
-    }
-    const mock = config?.calendar?.mockManagedEvents || [];
-    localStorage.setItem(EVENTS_STORE_KEY, JSON.stringify(mock));
-    return mock;
+    localStorage.removeItem(EVENTS_STORE_KEY);
+    return [];
 }
 
 function saveLocalEvents(events) {
@@ -189,7 +180,7 @@ async function loadManagedEvents(config) {
         return parsed;
     }
 
-    return loadLocalEvents(config);
+    return [];
 }
 
 export async function loadAllManagedEvents(config) {

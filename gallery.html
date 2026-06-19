@@ -35,7 +35,7 @@
 
             <section class="card">
                 <h2>写真投稿（ユーザー投稿）</h2>
-                <p class="note">保存先フォルダを選択するか、新規フォルダを作成してから投稿できます。</p>
+                <p class="note">保存先フォルダを選択して投稿してください。写真は選択したDriveフォルダに直接保存されます。</p>
                 <form id="gallery-upload-form" class="inline-form">
                     <label>投稿者名
                         <input name="uploaderName" type="text" required>
@@ -43,11 +43,11 @@
                     <label>保存先の系統
                         <select id="gallery-destination" name="destination" required>
                             <option value="">選択してください</option>
-                            <option value="new">新規フォルダを作成</option>
+                            <option value="new">新しいフォルダを作成</option>
                         </select>
                     </label>
                     <label id="new-folder-wrap" class="hidden">新規フォルダ名
-                        <input id="new-folder-name" name="newFolderName" type="text" placeholder="例: 2026_秋のミニ集会">
+                        <input id="new-folder-name" name="newFolderName" type="text" placeholder="例: 2026_夏祭り写真">
                     </label>
                     <label>写真ファイル
                         <input name="photos" type="file" accept="image/*" multiple required>

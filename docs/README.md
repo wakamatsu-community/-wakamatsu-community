@@ -222,15 +222,13 @@ map: {
 ### 6. 写真アルバム投稿（Google Drive）
 
 1. Google Driveで写真保存用の親フォルダを作成
-2. 既存の行事別フォルダ（夏祭り、防災訓練、清掃活動など）を作成
+2. 既存の保存先フォルダ（例: 共有、アーカイブ）を作成
 3. `js/config.js` の `gallery.destinations[].folderId` に各フォルダIDを設定
-4. 新規フォルダ作成を有効にする場合は `gallery.drive.createFolderEndpoint` を設定
-5. 写真アップロードを有効にする場合は `gallery.drive.uploadEndpoint` を設定
+4. 写真アップロードを有効にする場合は `gallery.drive.uploadEndpoint` を設定
 
 gallery.html では以下が利用できます。
 
 - 保存先系統の選択（既存フォルダ）
-- 新規フォルダ作成（Apps Script連携）
 - 複数画像の投稿（Apps Script連携）
 ```
 
