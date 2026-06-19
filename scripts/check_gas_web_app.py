@@ -27,6 +27,15 @@ def summarize(text: str, limit: int = 200) -> str:
     return normalized[:limit] + "..."
 
 
+def normalize_gas_url(url: str) -> str:
+    normalized = url.strip()
+    if normalized.startswith("script.google.com/") or normalized.startswith("script.google.com"):
+        normalized = "https://" + normalized.lstrip("/")
+    elif normalized.startswith("www.script.google.com/") or normalized.startswith("www.script.google.com"):
+        normalized = "https://" + normalized.lstrip("/")
+    return normalized
+
+
 def request_json(url: str, method: str, payload: dict | None = None) -> dict:
     data = None
     headers = {"Accept": "application/json"}
@@ -73,10 +82,12 @@ def request_json(url: str, method: str, payload: dict | None = None) -> dict:
 
 
 def main() -> None:
-    gas_url = os.environ.get("GAS_WEB_APP_URL", "").strip()
+    gas_url = normalize_gas_url(os.environ.get("GAS_WEB_APP_URL", ""))
     if not gas_url:
         fail("GAS_WEB_APP_URL is empty")
 
+    if not gas_url.startswith(("http://", "https://")):
+        fail("GAS_WEB_APP_URL must start with http:// or https://")
     if "script.google.com/macros/s/" not in gas_url or not gas_url.endswith("/exec"):
         fail("GAS_WEB_APP_URL format looks invalid (expected deployed /exec URL)")
 

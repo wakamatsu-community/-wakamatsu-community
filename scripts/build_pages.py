@@ -43,6 +43,15 @@ RUNTIME_CONFIG_KEYS = [
 ]
 
 
+def normalize_gas_url(url: str) -> str:
+    normalized = url.strip()
+    if normalized.startswith("script.google.com/") or normalized.startswith("script.google.com"):
+        normalized = "https://" + normalized.lstrip("/")
+    elif normalized.startswith("www.script.google.com/") or normalized.startswith("www.script.google.com"):
+        normalized = "https://" + normalized.lstrip("/")
+    return normalized
+
+
 def load_env_file(env_path: Path) -> None:
     if not env_path.exists():
         return
@@ -94,6 +103,7 @@ def inject_runtime_config() -> None:
         key: os.getenv(key, "").strip()
         for key in RUNTIME_CONFIG_KEYS
     }
+    runtime_config["GAS_WEB_APP_URL"] = normalize_gas_url(runtime_config["GAS_WEB_APP_URL"])
     if not runtime_config["GAS_WEB_APP_URL"]:
         raise RuntimeError(
             "GAS_WEB_APP_URL が未設定です。"

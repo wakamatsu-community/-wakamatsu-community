@@ -18,7 +18,20 @@ if "REPLACE_WITH" in _raw_url or "YOUR_DEPLOYMENT" in _raw_url:
     print("[ERROR] GitHub Secrets の GAS_WEB_APP_URL が未設定または誤設定です（プレースホルダーが含まれています）。", file=sys.stderr)
     sys.exit(1)
 
-GAS_WEB_APP_URL: str = _raw_url
+
+def normalize_gas_web_app_url(raw_url: str) -> str:
+    url = raw_url.strip()
+    if url.startswith("script.google.com/") or url.startswith("script.google.com"):
+        url = "https://" + url.lstrip("/")
+    elif url.startswith("www.script.google.com/") or url.startswith("www.script.google.com"):
+        url = "https://" + url.lstrip("/")
+    return url
+
+
+GAS_WEB_APP_URL: str = normalize_gas_web_app_url(_raw_url)
+if not GAS_WEB_APP_URL.startswith(("http://", "https://")):
+    print("[ERROR] GAS_WEB_APP_URL は https:// から始まる完全なURLで指定してください。", file=sys.stderr)
+    sys.exit(1)
 OUTPUT_PATH = Path(__file__).resolve().parent / "Docs" / "events.json"
 
 
