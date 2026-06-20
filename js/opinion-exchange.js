@@ -147,6 +147,15 @@ function createOpinionRecord(form) {
     };
 }
 
+function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("写真ファイルの読み込みに失敗しました。"));
+        reader.readAsDataURL(file);
+    });
+}
+
 async function fetchOpinionsFromGas() {
     try {
         const payload = await gasGet({ action: "getOpinions" });
@@ -172,14 +181,18 @@ async function fetchOpinionsFromGas() {
     }
 }
 
-async function submitOpinionToGas(record) {
+async function submitOpinionToGas(record, photoPayload = null) {
     const requestUrl = getGasUrl();
     try {
         const response = await gasPost({
             action: "addOpinion",
             name: record.name,
             category: record.category,
-            content: record.content
+            content: record.content,
+            photoData: photoPayload?.photoData || "",
+            photoFileName: photoPayload?.photoFileName || "",
+            photoMimeType: photoPayload?.photoMimeType || "",
+            photoDescription: photoPayload?.photoDescription || ""
         });
 
         const hasBusinessError = response && (
@@ -236,6 +249,9 @@ export function initOpinionExchangePage() {
     form.addEventListener("submit", async (event) => {
         event.preventDefault();
         const record = createOpinionRecord(form);
+        const formData = new FormData(form);
+        const photoFile = formData.get("photo");
+        const photoDescription = String(formData.get("photoDescription") || "").trim();
 
         if (!record.category || !record.content) {
             if (status) {
@@ -244,7 +260,25 @@ export function initOpinionExchangePage() {
             return;
         }
 
-        const result = await submitOpinionToGas(record);
+        let photoPayload = null;
+        if (photoFile instanceof File && photoFile.size > 0) {
+            try {
+                const photoData = await fileToDataUrl(photoFile);
+                photoPayload = {
+                    photoData,
+                    photoFileName: String(photoFile.name || ""),
+                    photoMimeType: String(photoFile.type || "image/jpeg"),
+                    photoDescription
+                };
+            } catch (error) {
+                if (status) {
+                    status.textContent = String(error?.message || error || "写真の読み込みに失敗しました。");
+                }
+                return;
+            }
+        }
+
+        const result = await submitOpinionToGas(record, photoPayload);
         if (!result.ok) {
             const nextOpinions = [record, ...loadLocalOpinions()];
             saveLocalOpinions(nextOpinions);

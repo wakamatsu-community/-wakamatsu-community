@@ -9,6 +9,8 @@ var GALLERY_FOLDER_ID = "1uSlpwLAFa1gbBrD18Mn_apKyZ6dhAlcw";
 var GALLERY_SHARED_FOLDER_ID = "1uSlpwLAFa1gbBrD18Mn_apKyZ6dhAlcw";
 var GALLERY_ARCHIVE_FOLDER_ID = "18SHRujU2DtAe0Fdao_Lt6WWpCM53ICE3";
 var PHOTO_ARCHIVE_DAYS = 365;
+var INFORMATION_PHOTO_FOLDER_PATH = ["台帳関係", "情報写真"];
+var INFORMATION_PHOTO_CATEGORY = "情報写真";
 var API_BUILD = "2026-06-18-post-enabled";
 
 var LEDGER_HEADERS = {
@@ -394,9 +396,60 @@ function addOpinion_(params) {
     var sheet    = getOrCreateSheet_(spreadsheet, "掲示板(意見交換)");
     var postId   = "OP-" + new Date().getTime();
     var postedAt = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss");
+    var photoResult = null;
+
+    var photoDataRaw = String(params.photoData || "").trim();
+    if (photoDataRaw) {
+      var fileName = String(params.photoFileName || (postId + ".jpg")).trim();
+      var mimeTypeFromParam = String(params.photoMimeType || "").trim();
+      var photoDescription = String(params.photoDescription || params.content || "").trim();
+      var folderId = resolveInformationPhotoFolderId_();
+
+      var match = photoDataRaw.match(/^data:([^;]+);base64,(.*)$/i);
+      var mimeType = match ? match[1] : (mimeTypeFromParam || "image/jpeg");
+      var base64Body = match ? match[2] : photoDataRaw;
+      var bytes = Utilities.base64Decode(base64Body);
+      var blob = Utilities.newBlob(bytes, mimeType, fileName || (postId + ".jpg"));
+
+      var folder = DriveApp.getFolderById(folderId);
+      var file = folder.createFile(blob);
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+      var fileId = file.getId();
+      var imageUrl = "https://drive.google.com/uc?export=view&id=" + fileId;
+      var photoId = "PH-" + new Date().getTime();
+      var postedDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
+
+      // 写真ID, ドライブのファイルID, 画像URL, 投稿日, 投稿者氏名, コメント/説明, アルバム名/カテゴリ, ファイル名, 保管状態, アーカイブ日時
+      appendRow_("写真メタデータ", [
+        photoId,
+        fileId,
+        imageUrl,
+        postedDate,
+        String(params.name || ""),
+        photoDescription,
+        INFORMATION_PHOTO_CATEGORY,
+        file.getName(),
+        "共有中",
+        ""
+      ]);
+
+      photoResult = {
+        fileId: fileId,
+        imageUrl: imageUrl,
+        folderId: folderId,
+        folderPath: INFORMATION_PHOTO_FOLDER_PATH.join("/")
+      };
+    }
+
     // 投稿ID, 日時, 名前, カテゴリ, 内容, 返信状態, 管理ステータス
-    sheet.appendRow([postId, postedAt, String(params.name||""), String(params.category||""), String(params.content||""), "未対応", "公開中"]);
-    return { success: true, message: "投稿が完了しました" };
+    sheet.appendRow([postId, postedAt, String(params.name||""), String(params.category||""), String(params.content||""), "未対応", "未確認"]);
+    return {
+      success: true,
+      message: photoResult ? "情報投稿と写真の保存が完了しました" : "情報投稿が完了しました",
+      postId: postId,
+      photo: photoResult
+    };
   } catch (err) {
     return { success: false, error: String(err && err.message || err) };
   }
@@ -1150,6 +1203,29 @@ function resolvePhotoRootFolderId_() {
 function resolveArchivePhotoFolderId_() {
   if (!isPlaceholderFolderId_(GALLERY_ARCHIVE_FOLDER_ID)) { return String(GALLERY_ARCHIVE_FOLDER_ID).trim(); }
   return "";
+}
+
+function resolveInformationPhotoFolderId_() {
+  return ensureDriveFolderPath_(DriveApp.getRootFolder(), INFORMATION_PHOTO_FOLDER_PATH).getId();
+}
+
+function ensureDriveFolderPath_(baseFolder, pathParts) {
+  var current = baseFolder;
+  pathParts.forEach(function(part) {
+    var name = String(part || "").trim();
+    if (!name) { return; }
+    var next = getChildFolderByName_(current, name);
+    if (!next) {
+      next = current.createFolder(name);
+    }
+    current = next;
+  });
+  return current;
+}
+
+function getChildFolderByName_(parentFolder, folderName) {
+  var iterator = parentFolder.getFoldersByName(folderName);
+  return iterator.hasNext() ? iterator.next() : null;
 }
 
 function deleteTriggersByHandler_(handlerName) {

@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
-    <title>意見交換ページ | 福山市若松町内会コミュニケーションボード</title>
-    <meta name="description" content="若松町内会の意見交換ページ。冠婚葬祭や困りごと、地域の相談を共有できます。">
+    <title>情報交換ページ | 福山市若松町内会コミュニケーションボード</title>
+    <meta name="description" content="若松町内会の情報交換ページ。冠婚葬祭や困りごと、地域の相談を共有できます。">
     <link rel="stylesheet" href="style.css">
 </head>
 <body data-page="opinion">
@@ -22,7 +22,7 @@
                     <li><a href="disaster.html" class="nav-link">防災情報</a></li>
                     <li><a href="documents.html" class="nav-link">回覧板・資料室</a></li>
                     <li><a href="gallery.html" class="nav-link">写真アルバム</a></li>
-                    <li><a href="opinion.html" class="nav-link">意見交換</a></li>
+                    <li><a href="opinion.html" class="nav-link">情報交換</a></li>
                     <li><a href="admin.html" class="nav-link">管理ページ</a></li>
                 </ul>
             </nav>
@@ -31,15 +31,15 @@
         <main class="section-stack">
             <section class="card hero opinion-hero">
                 <div class="hero-body">
-                    <p class="eyebrow hero-pill">COMMUNITY OPINION EXCHANGE</p>
-                    <h1>意見交換・相談ページ</h1>
+                    <p class="eyebrow hero-pill">COMMUNITY INFORMATION EXCHANGE</p>
+                    <h1>情報交換・相談ページ</h1>
                     <p>冠婚葬祭の連絡、困りごと、落とし物、側溝やごみの相談など、地域の気づきを共有するためのページです。</p>
                     <p class="note">入力例: 「○○の側溝にゴミが放置されています」「○○を探しています」</p>
                 </div>
             </section>
 
             <section class="card">
-                <h2>意見を投稿する</h2>
+                <h2>情報を投稿する</h2>
                 <p class="note">名前は任意です。投稿後は「未確認」で表示され、管理者確認後に「検討中・対応中・解消・その他」と事由が表示されます。</p>
                 <form id="opinion-form" class="inline-form opinion-form-grid">
                     <label>名前（任意）
@@ -58,6 +58,12 @@
                     </label>
                     <label class="opinion-content-field">情報の内容
                         <textarea name="content" placeholder="例: ○○の側溝にゴミが放置されています。対応をお願いします。" required></textarea>
+                    </label>
+                    <label class="opinion-content-field">写真（任意）
+                        <input name="photo" type="file" accept="image/*">
+                    </label>
+                    <label class="opinion-content-field">写真の説明（任意・メタデータ保存）
+                        <textarea name="photoDescription" placeholder="例: 6/20 朝8時ごろ撮影。場所は○○公園南側。"></textarea>
                     </label>
                     <button class="button" type="submit">投稿する</button>
                     <p id="opinion-status" class="note" aria-live="polite"></p>
