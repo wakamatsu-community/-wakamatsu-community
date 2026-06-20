@@ -3,6 +3,7 @@
 // ============================================================
 
 var LEDGER_SPREADSHEET_NAME = "福山市若松町内会_管理台帳";
+var LEDGER_SPREADSHEET_ID = "";
 var TOWN_CALENDAR_ID = "replace-with-your-town-calendar-id@group.calendar.google.com";
 var EQUIPMENT_CALENDAR_ID = "replace-with-your-equipment-calendar-id@group.calendar.google.com";
 var GALLERY_FOLDER_ID = "1uSlpwLAFa1gbBrD18Mn_apKyZ6dhAlcw";
@@ -12,11 +13,13 @@ var PHOTO_ARCHIVE_DAYS = 365;
 var INFORMATION_PHOTO_FOLDER_PATH = ["台帳関係", "情報写真"];
 var INFORMATION_PHOTO_CATEGORY = "情報写真";
 var API_BUILD = "2026-06-18-post-enabled";
-var JSON_CACHE_TTL_SECONDS = 21600;
+var JSON_CACHE_TTL_SECONDS = 1500;
 var EVENT_JSON_CACHE_KEYS = {
   schedule: "schedule_events_json",
   entry: "entry_events_json"
 };
+var SCRIPT_CACHE_MAX_BYTES = 100000;
+var SCRIPT_CACHE_SAFE_BYTES = 95000;
 
 var LEDGER_HEADERS = {
   "役員_会員台帳": [
@@ -264,6 +267,13 @@ function fixAndInitializeSheets() {
 }
 
 function getLedgerSpreadsheet() {
+  if (LEDGER_SPREADSHEET_ID && String(LEDGER_SPREADSHEET_ID).trim()) {
+    try {
+      return SpreadsheetApp.openById(String(LEDGER_SPREADSHEET_ID).trim());
+    } catch (err) {
+      Logger.log("getLedgerSpreadsheet openById failed, fallback to name. " + String(err && err.message || err));
+    }
+  }
   return openSpreadsheetByName_(LEDGER_SPREADSHEET_NAME);
 }
 
@@ -283,31 +293,42 @@ function safeParseJson_(text) {
 function readJsonCache_(cacheKey) {
   var cache = CacheService.getScriptCache().get(cacheKey);
   var parsed = safeParseJson_(cache);
-  if (parsed !== null) { return parsed; }
-
-  var backup = PropertiesService.getScriptProperties().getProperty(cacheKey);
-  parsed = safeParseJson_(backup);
-  if (parsed !== null) {
-    try {
-      CacheService.getScriptCache().put(cacheKey, backup, JSON_CACHE_TTL_SECONDS);
-    } catch (err) {
-      logJsonCacheError_("readJsonCache_ cache restore failed for " + cacheKey, err);
-    }
-    return parsed;
-  }
-
-  return null;
+  return parsed !== null ? parsed : null;
 }
 
 function writeJsonCache_(cacheKey, value) {
   var json = JSON.stringify(Array.isArray(value) ? value : []);
+  var jsonBytes = Utilities.newBlob(json).getBytes().length;
+
+  if (jsonBytes > SCRIPT_CACHE_MAX_BYTES) {
+    logJsonCacheError_("writeJsonCache_ payload too large for ScriptCache key=" + cacheKey + " bytes=" + jsonBytes, new Error("cache payload size over limit"));
+    invalidateJsonCache_(cacheKey);
+    return JSON.parse(json);
+  }
+
+  if (jsonBytes > SCRIPT_CACHE_SAFE_BYTES) {
+    Logger.log("writeJsonCache_ payload near limit. key=" + cacheKey + " bytes=" + jsonBytes);
+  }
+
   try {
     CacheService.getScriptCache().put(cacheKey, json, JSON_CACHE_TTL_SECONDS);
   } catch (err) {
-    logJsonCacheError_("writeJsonCache_ cache put failed for " + cacheKey, err);
+    logJsonCacheError_("writeJsonCache_ cache put failed for " + cacheKey + " bytes=" + jsonBytes, err);
   }
-  PropertiesService.getScriptProperties().setProperty(cacheKey, json);
   return JSON.parse(json);
+}
+
+function invalidateJsonCache_(cacheKey) {
+  try {
+    CacheService.getScriptCache().remove(cacheKey);
+  } catch (err) {
+    logJsonCacheError_("invalidateJsonCache_ failed for " + cacheKey, err);
+  }
+}
+
+function invalidateEventJsonCaches_() {
+  invalidateJsonCache_(EVENT_JSON_CACHE_KEYS.schedule);
+  invalidateJsonCache_(EVENT_JSON_CACHE_KEYS.entry);
 }
 
 function formatTimeRange_(start, end) {
@@ -320,7 +341,8 @@ function formatTimeRange_(start, end) {
 }
 
 function buildScheduleEventsJson_() {
-  var rows = readSheetAsObjects_("町内行事予定");
+  var spreadsheet = getLedgerSpreadsheet();
+  var rows = readSheetAsObjects_("町内行事予定", spreadsheet);
   var updatedAt = nowIso_();
 
   return rows.map(function(row, index) {
@@ -341,9 +363,17 @@ function buildScheduleEventsJson_() {
 }
 
 function buildEntryEventsJson_() {
-  var events = readSheetAsObjects_("イベント企画");
-  var participants = readSheetAsObjects_("イベント参加");
+  var spreadsheet = getLedgerSpreadsheet();
+  var events = readSheetAsObjects_("イベント企画", spreadsheet);
+  var participants = readSheetAsObjects_("イベント参加", spreadsheet);
   var updatedAt = nowIso_();
+
+  var participantCountByEvent = {};
+  participants.forEach(function(entry) {
+    var key = String(entry["イベントID"] || "").trim();
+    if (!key) { return; }
+    participantCountByEvent[key] = (participantCountByEvent[key] || 0) + 1;
+  });
 
   return events.map(function(row, index) {
     var start = parseDateOrNull_(row["開始日時"]);
@@ -351,9 +381,7 @@ function buildEntryEventsJson_() {
     var end = parseDateOrNull_(row["終了日時"]);
     var eventId = String(row["イベントID"] || "EV-" + index);
     var capacity = Number(row["最大人数"] || 0);
-    var currentCount = participants.filter(function(entry) {
-      return String(entry["イベントID"] || "").trim() === eventId;
-    }).length;
+    var currentCount = participantCountByEvent[eventId] || 0;
     var deadline = toIso_(start);
     var closed = start.getTime() <= new Date().getTime() || (capacity > 0 && currentCount >= capacity);
 
@@ -412,7 +440,7 @@ function getEntryEvents() {
 
 function refreshScheduleEventsCache_() {
   try {
-    rebuildScheduleEventsJson();
+    invalidateJsonCache_(EVENT_JSON_CACHE_KEYS.schedule);
     return true;
   } catch (err) {
     logJsonCacheError_("refreshScheduleEventsCache_", err);
@@ -422,7 +450,7 @@ function refreshScheduleEventsCache_() {
 
 function refreshEntryEventsCache_() {
   try {
-    rebuildEntryEventsJson();
+    invalidateJsonCache_(EVENT_JSON_CACHE_KEYS.entry);
     return true;
   } catch (err) {
     logJsonCacheError_("refreshEntryEventsCache_", err);
@@ -541,7 +569,8 @@ function getCalendarEventsForFrontend_() {
 }
 
 function getEquipmentStatusForFrontend_() {
-  var rows = readSheetAsObjects_("備品予約");
+  var spreadsheet = getLedgerSpreadsheet();
+  var rows = readSheetAsObjects_("備品予約", spreadsheet);
   return rows.map(function(row, index) {
     return {
       id: String(row["予約ID"] || "EQ-" + index),
@@ -558,9 +587,10 @@ function getEquipmentStatusForFrontend_() {
 }
 
 function getEquipment_() {
+  var spreadsheet = getLedgerSpreadsheet();
   return {
-    masters: readSheetAsObjects_("備品台帳"),
-    reservations: readSheetAsObjects_("備品予約")
+    masters: readSheetAsObjects_("備品台帳", spreadsheet),
+    reservations: readSheetAsObjects_("備品予約", spreadsheet)
   };
 }
 
@@ -894,6 +924,7 @@ function addRecurringEvent_(params) {
     var createdCalendarIds = [];
     var calendarLinkedCount = 0;
 
+    var rowsToAppend = [];
     starts.forEach(function(startDate) {
       var endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
       var calEventId = "";
@@ -909,7 +940,7 @@ function addRecurringEvent_(params) {
         }
       }
       var eventId = "EV-" + startDate.getTime() + "-" + Math.floor(Math.random() * 1000);
-      sheet.appendRow([
+      rowsToAppend.push([
         eventId, calEventId,
         Utilities.formatDate(startDate, Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
         Utilities.formatDate(endDate,   Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
@@ -919,6 +950,8 @@ function addRecurringEvent_(params) {
       createdCalendarIds.push(calEventId);
       if (calEventId) { calendarLinkedCount += 1; }
     });
+
+    appendRowsToSheet_(sheet, rowsToAppend);
 
     refreshScheduleEventsCache_();
 
@@ -950,7 +983,7 @@ function registerEventEntry(eventId, formData) {
     if (!normalizedEventId || !name || !contact) { throw new Error("eventId, name, contact は必須です。"); }
 
     var spreadsheet = getLedgerSpreadsheet();
-    var eventRows   = readSheetAsObjects_("イベント企画");
+    var eventRows   = readSheetAsObjects_("イベント企画", spreadsheet);
     var targetEvent = eventRows.filter(function(row) {
       return String(row["イベントID"] || "").trim() === normalizedEventId;
     })[0];
@@ -958,7 +991,7 @@ function registerEventEntry(eventId, formData) {
     if (!targetEvent) { throw new Error("指定イベントが見つかりません: " + normalizedEventId); }
 
     var maxParticipants = Number(targetEvent["最大人数"] || 0);
-    var joinRows        = readSheetAsObjects_("イベント参加");
+    var joinRows        = readSheetAsObjects_("イベント参加", spreadsheet);
     var currentCount    = joinRows.filter(function(row) {
       return String(row["イベントID"] || "").trim() === normalizedEventId;
     }).length;
@@ -1003,8 +1036,9 @@ function reserveEquipment_(params) {
       return { equipment: equipment, equipmentId: String((item && item.equipmentId) || "").trim(), quantity: quantity, loanDate: loanDate, returnDate: returnDate };
     });
 
-    var masters           = readSheetAsObjects_("備品台帳");
-    var reservations      = readSheetAsObjects_("備品予約");
+    var spreadsheet       = getLedgerSpreadsheet();
+    var masters           = readSheetAsObjects_("備品台帳", spreadsheet);
+    var reservations      = readSheetAsObjects_("備品予約", spreadsheet);
     var equipmentCalendar = CalendarApp.getCalendarById(EQUIPMENT_CALENDAR_ID);
     if (!equipmentCalendar) { throw new Error("備品予約用カレンダーが見つかりません。EQUIPMENT_CALENDAR_ID を確認してください。"); }
 
@@ -1029,13 +1063,14 @@ function reserveEquipment_(params) {
       }
     }
 
+    var rowsToAppend = [];
     normalizedItems.forEach(function(item, index) {
       var calendarEndDate = new Date(item.returnDate.getTime());
       calendarEndDate.setDate(calendarEndDate.getDate() + 1);
       var calEvent = equipmentCalendar.createAllDayEvent("備品貸出: " + item.equipment, item.loanDate, calendarEndDate);
       var applicantCell = applicant + (phone || group ? " / " + [phone, group].filter(Boolean).join(" / ") : "");
       // 予約ID, カレンダー予定ID, 備品名, 数量, 貸出日, 返納日, 申請者, ステータス
-      appendRow_("備品予約", [
+      rowsToAppend.push([
         "EQ-" + new Date().getTime() + "-" + (index + 1),
         String(calEvent.getId() || ""),
         item.equipment, item.quantity,
@@ -1043,6 +1078,8 @@ function reserveEquipment_(params) {
         applicantCell, "予約確定"
       ]);
     });
+
+    appendRows_("備品予約", rowsToAppend);
 
     return { success: true, message: "備品の予約が完了しました" };
   } catch (err) {
@@ -1204,9 +1241,9 @@ function uploadDocument_(params) {
 // ============================================================
 // 共通シート操作
 // ============================================================
-function readSheetAsObjects_(sheetName) {
-  var spreadsheet = getLedgerSpreadsheet();
-  var sheet       = getOrCreateSheet_(spreadsheet, sheetName);
+function readSheetAsObjects_(sheetName, spreadsheet) {
+  var activeSpreadsheet = spreadsheet || getLedgerSpreadsheet();
+  var sheet       = getOrCreateSheet_(activeSpreadsheet, sheetName);
   var values      = sheet.getDataRange().getValues();
   if (!values || values.length <= 1) { return []; }
 
@@ -1225,6 +1262,32 @@ function appendRow_(sheetName, rowValues) {
   var sheet       = getOrCreateSheet_(spreadsheet, sheetName);
   ensureColumnCount_(sheet, rowValues.length);
   sheet.appendRow(rowValues);
+}
+
+function appendRows_(sheetName, rowsValues) {
+  if (!Array.isArray(rowsValues) || rowsValues.length === 0) { return; }
+  var spreadsheet = getLedgerSpreadsheet();
+  var sheet       = getOrCreateSheet_(spreadsheet, sheetName);
+  appendRowsToSheet_(sheet, rowsValues);
+}
+
+function appendRowsToSheet_(sheet, rowsValues) {
+  if (!Array.isArray(rowsValues) || rowsValues.length === 0) { return; }
+  var maxColumns = rowsValues.reduce(function(max, row) {
+    return Math.max(max, Array.isArray(row) ? row.length : 0);
+  }, 0);
+  if (maxColumns <= 0) { return; }
+
+  ensureColumnCount_(sheet, maxColumns);
+
+  var normalizedRows = rowsValues.map(function(row) {
+    var values = Array.isArray(row) ? row.slice(0) : [];
+    while (values.length < maxColumns) { values.push(""); }
+    return values;
+  });
+
+  var startRow = sheet.getLastRow() + 1;
+  sheet.getRange(startRow, 1, normalizedRows.length, maxColumns).setValues(normalizedRows);
 }
 
 function runPhotoArchiveJob() {
@@ -1281,6 +1344,8 @@ function autoArchiveOldPhotos_() {
   var skipped = 0;
   var failed = 0;
 
+  var hasSheetUpdates = false;
+
   for (var rowNum = 2; rowNum <= values.length; rowNum++) {
     checked += 1;
     var row = values[rowNum - 1];
@@ -1313,17 +1378,23 @@ function autoArchiveOldPhotos_() {
         Logger.log("autoArchiveOldPhotos_: setTrashed failed. row=" + rowNum + " / " + String(trashErr && trashErr.message || trashErr));
       }
 
-      sheet.getRange(rowNum, idxFileId + 1).setValue(archivedFileId);
-      sheet.getRange(rowNum, idxAlbum + 1).setValue(archiveFolderId);
-      if (idxFileName !== undefined) { sheet.getRange(rowNum, idxFileName + 1).setValue(file.getName()); }
-      if (idxStorage !== undefined) { sheet.getRange(rowNum, idxStorage + 1).setValue("アーカイブ済"); }
-      if (idxArchivedAt !== undefined) { sheet.getRange(rowNum, idxArchivedAt + 1).setValue(nowIso_()); }
+      row[idxFileId] = archivedFileId;
+      row[idxAlbum] = archiveFolderId;
+      if (idxFileName !== undefined) { row[idxFileName] = file.getName(); }
+      if (idxStorage !== undefined) { row[idxStorage] = "アーカイブ済"; }
+      if (idxArchivedAt !== undefined) { row[idxArchivedAt] = nowIso_(); }
+      hasSheetUpdates = true;
 
       archived += 1;
     } catch (err) {
       failed += 1;
       Logger.log("autoArchiveOldPhotos_ failed: row=" + rowNum + " / " + String(err && err.message || err));
     }
+  }
+
+  if (hasSheetUpdates) {
+    var dataRows = values.slice(1);
+    sheet.getRange(2, 1, dataRows.length, headers.length).setValues(dataRows);
   }
 
   return {
