@@ -1383,6 +1383,9 @@ function formatDateShort(iso) {
 
 function bindTownEventListSection() {
     const reloadBtn  = document.getElementById("admin-town-events-reload");
+    const editSelectedBtn = document.getElementById("admin-town-events-edit-selected");
+    const deleteSelectedBtn = document.getElementById("admin-town-events-delete-selected");
+    const selectAll = document.getElementById("admin-town-events-select-all");
     const tbody      = document.getElementById("admin-town-events-tbody");
     const listStatus = document.getElementById("admin-town-events-list-status");
     const modal      = document.getElementById("admin-town-event-edit-modal");
@@ -1401,6 +1404,9 @@ function bindTownEventListSection() {
             const rows = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
             currentEvents = rows;
             renderTable(rows);
+            if (selectAll) {
+                selectAll.checked = false;
+            }
             listStatus.textContent = `${rows.length}件の行事を表示しています。`;
         } catch (err) {
             listStatus.textContent = `【取得失敗】${err instanceof Error ? err.message : String(err)}`;
@@ -1418,54 +1424,103 @@ function bindTownEventListSection() {
         rows.forEach((ev) => {
             const tr = document.createElement("tr");
             tr.innerHTML = `
+                <td><input type="checkbox" data-town-event-check data-id="${ev.eventId}" aria-label="${ev.title || "行事"}を選択"></td>
                 <td>${ev.title || ""}</td>
                 <td>${formatDateShort(ev.start)}</td>
-                <td>${ev.place || ""}</td>
-                <td>
-                    <button class="button" type="button" data-action="edit-town-event" data-id="${ev.eventId}">修正</button>
-                    <button class="button danger" type="button" data-action="delete-town-event" data-id="${ev.eventId}" data-title="${ev.title || ""}">削除</button>
-                </td>`;
+                <td>${ev.place || ""}</td>`;
             tbody.appendChild(tr);
         });
     }
 
+    function getSelectedEventIds() {
+        return Array.from(tbody.querySelectorAll('input[data-town-event-check]:checked'))
+            .map((el) => String(el.dataset.id || "").trim())
+            .filter(Boolean);
+    }
+
+    function openEditModal(eventId) {
+        const ev = currentEvents.find((r) => r.eventId === eventId);
+        if (!ev || !modal || !editForm) { return; }
+        editForm.querySelector('[name="eventId"]').value  = ev.eventId;
+        editForm.querySelector('[name="title"]').value    = ev.title || "";
+        editForm.querySelector('[name="start"]').value    = toDatetimeLocalFromIso(ev.start);
+        editForm.querySelector('[name="end"]').value      = toDatetimeLocalFromIso(ev.end);
+        editForm.querySelector('[name="place"]').value    = ev.place || "";
+        editForm.querySelector('[name="description"]').value = ev.description || "";
+        editStatus.textContent = "";
+        modal.classList.remove("hidden");
+        document.body.style.overflow = "hidden";
+    }
+
     reloadBtn.addEventListener("click", loadList);
 
-    tbody.addEventListener("click", async (e) => {
-        const btn = e.target.closest("button[data-action]");
-        if (!btn) { return; }
-        const action  = btn.dataset.action;
-        const eventId = btn.dataset.id;
+    if (selectAll) {
+        selectAll.addEventListener("change", () => {
+            const checked = selectAll.checked;
+            tbody.querySelectorAll('input[data-town-event-check]').forEach((el) => {
+                el.checked = checked;
+            });
+        });
+    }
 
-        if (action === "delete-town-event") {
-            const title = btn.dataset.title || eventId;
-            if (!confirm(`「${title}」を削除してよいですか？`)) { return; }
-            listStatus.textContent = "削除中...";
+    tbody.addEventListener("change", (e) => {
+        const target = e.target;
+        if (!(target instanceof HTMLInputElement) || !target.matches('input[data-town-event-check]')) {
+            return;
+        }
+        if (!selectAll) {
+            return;
+        }
+        const boxes = Array.from(tbody.querySelectorAll('input[data-town-event-check]'));
+        selectAll.checked = boxes.length > 0 && boxes.every((el) => el.checked);
+    });
+
+    if (editSelectedBtn) {
+        editSelectedBtn.addEventListener("click", () => {
+            const selectedIds = getSelectedEventIds();
+            if (selectedIds.length === 0) {
+                listStatus.textContent = "修正する行事を1件選択してください。";
+                return;
+            }
+            if (selectedIds.length > 1) {
+                listStatus.textContent = "修正は1件のみ選択できます。";
+                return;
+            }
+            openEditModal(selectedIds[0]);
+        });
+    }
+
+    if (deleteSelectedBtn) {
+        deleteSelectedBtn.addEventListener("click", async () => {
+            const selectedIds = getSelectedEventIds();
+            if (selectedIds.length === 0) {
+                listStatus.textContent = "削除する行事を選択してください。";
+                return;
+            }
+
+            if (!confirm(`選択した${selectedIds.length}件を削除してよいですか？`)) {
+                return;
+            }
+
+            listStatus.textContent = `削除中...（${selectedIds.length}件）`;
+            let deleted = 0;
             try {
-                const res = await gasPost({ action: "deleteTownEvent", eventId });
-                const ok = res?.data?.success ?? res?.success ?? res?.ok;
-                if (!ok) { throw new Error(String(res?.data?.error || res?.error || "削除失敗")); }
-                listStatus.textContent = `削除しました: ${title}`;
+                for (const eventId of selectedIds) {
+                    const res = await gasPost({ action: "deleteTownEvent", eventId });
+                    const ok = res?.data?.success ?? res?.success ?? res?.ok;
+                    if (!ok) {
+                        throw new Error(String(res?.data?.error || res?.error || `削除失敗: ${eventId}`));
+                    }
+                    deleted += 1;
+                }
+                listStatus.textContent = `${deleted}件を削除しました。`;
                 await loadList();
             } catch (err) {
-                listStatus.textContent = `【削除失敗】${err instanceof Error ? err.message : String(err)}`;
+                listStatus.textContent = `【削除失敗】${err instanceof Error ? err.message : String(err)}（${deleted}/${selectedIds.length}件完了）`;
+                await loadList();
             }
-        }
-
-        if (action === "edit-town-event") {
-            const ev = currentEvents.find((r) => r.eventId === eventId);
-            if (!ev || !modal || !editForm) { return; }
-            editForm.querySelector('[name="eventId"]').value  = ev.eventId;
-            editForm.querySelector('[name="title"]').value    = ev.title || "";
-            editForm.querySelector('[name="start"]').value    = toDatetimeLocalFromIso(ev.start);
-            editForm.querySelector('[name="end"]').value      = toDatetimeLocalFromIso(ev.end);
-            editForm.querySelector('[name="place"]').value    = ev.place || "";
-            editForm.querySelector('[name="description"]').value = ev.description || "";
-            editStatus.textContent = "";
-            modal.classList.remove("hidden");
-            document.body.style.overflow = "hidden";
-        }
-    });
+        });
+    }
 
     if (editClose && modal) {
         editClose.addEventListener("click", () => {
