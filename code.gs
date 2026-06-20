@@ -10,7 +10,7 @@ var GALLERY_SHARED_FOLDER_ID = "1uSlpwLAFa1gbBrD18Mn_apKyZ6dhAlcw";
 var GALLERY_ARCHIVE_FOLDER_ID = "18SHRujU2DtAe0Fdao_Lt6WWpCM53ICE3";
 var PHOTO_ARCHIVE_DAYS = 365;
 var INFORMATION_PHOTO_FOLDER_PATH = ["台帳関係", "情報写真"];
-var INFORMATION_PHOTO_CATEGORY = "情報写真";
+var INFORMATION_PHOTO_FIXED_PATH_TEXT = "台帳関係/情報写真/";
 var API_BUILD = "2026-06-18-post-enabled";
 
 var LEDGER_HEADERS = {
@@ -428,7 +428,7 @@ function addOpinion_(params) {
         postedDate,
         String(params.name || ""),
         photoDescription,
-        INFORMATION_PHOTO_CATEGORY,
+        INFORMATION_PHOTO_FIXED_PATH_TEXT,
         file.getName(),
         "共有中",
         ""
@@ -438,7 +438,7 @@ function addOpinion_(params) {
         fileId: fileId,
         imageUrl: imageUrl,
         folderId: folderId,
-        folderPath: INFORMATION_PHOTO_FOLDER_PATH.join("/")
+        folderPath: INFORMATION_PHOTO_FIXED_PATH_TEXT
       };
     }
 
