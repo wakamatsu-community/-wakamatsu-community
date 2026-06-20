@@ -111,31 +111,58 @@ function saveLocalEvents(events) {
     localStorage.setItem(EVENTS_STORE_KEY, JSON.stringify(events));
 }
 
+function splitScheduleDateTime(dateValue, timeValue) {
+    const date = String(dateValue || "").trim();
+    const time = String(timeValue || "").trim();
+    if (!date) {
+        return { start: "", end: "", scheduleLabel: "" };
+    }
+
+    const buildIso = (timeText) => {
+        if (!timeText) {
+            return date;
+        }
+        const matched = timeText.match(/^(\d{1,2}):(\d{2})/);
+        if (!matched) {
+            return date;
+        }
+        return `${date}T${matched[1].padStart(2, "0")}:${matched[2]}:00`;
+    };
+
+    const parts = time.split(/\s*[-〜~]\s*/);
+    const start = buildIso(parts[0] || time);
+    const end = parts[1] ? buildIso(parts[1]) : "";
+    const scheduleLabel = time ? `${date} ${time}` : date;
+    return { start, end, scheduleLabel };
+}
+
 function normalizeManagedEventsFromGas(payload) {
-    const rows = Array.isArray(payload?.data?.data)
-        ? payload.data.data
-        : Array.isArray(payload?.data)
-            ? payload.data
-            : Array.isArray(payload)
-                ? payload
-                : [];
+    const rows = Array.isArray(payload?.data)
+        ? payload.data
+        : Array.isArray(payload)
+            ? payload
+            : [];
 
     return rows
         .map((row, index) => {
-            const start = toDatetimeLocalValue(row?.["開始日時"] || row?.start || "");
-            const end = toDatetimeLocalValue(row?.["終了日時"] || row?.end || "");
+            const timing = splitScheduleDateTime(row?.date || "", row?.time || "");
+            const capacity = Number(row?.capacity || 0);
             return {
-                id: String(row?.["イベントID"] || row?.id || `EV-${index}`),
+                id: String(row?.eventId || row?.id || `EV-${index}`),
                 type: "special",
-                title: String(row?.["タイトル"] || row?.title || ""),
+                title: String(row?.title || ""),
                 category: String(row?.category || "コミニティ"),
-                scheduleLabel: formatScheduleLabelFromRange(start, end),
-                place: String(row?.["場所"] || row?.place || ""),
-                description: String(row?.["説明"] || row?.description || ""),
-                minParticipants: Number(row?.["最少人数"] || row?.minParticipants || 0),
-                maxParticipants: Number(row?.["最大人数"] || row?.maxParticipants || 0),
-                start: start ? new Date(start).toISOString() : "",
-                end: end ? new Date(end).toISOString() : "",
+                scheduleLabel: timing.scheduleLabel,
+                place: String(row?.place || ""),
+                description: String(row?.description || ""),
+                minParticipants: capacity > 0 ? 1 : 0,
+                maxParticipants: capacity,
+                currentCount: Number(row?.currentCount || 0),
+                entryEnabled: row?.entryEnabled !== false,
+                deadline: String(row?.deadline || ""),
+                status: String(row?.status || ""),
+                start: timing.start,
+                end: timing.end,
                 recruitFormUrl: ""
             };
         })
@@ -144,40 +171,14 @@ function normalizeManagedEventsFromGas(payload) {
 
 async function loadManagedEvents(config) {
     try {
-        const payload = await gasGet({ type: "getEvents" });
+        const payload = await gasGet({ type: "getEntryEvents" });
         const parsedFromGas = normalizeManagedEventsFromGas(payload);
         if (parsedFromGas.length > 0) {
             saveLocalEvents(parsedFromGas);
             return parsedFromGas;
         }
     } catch {
-        // GAS取得失敗時のみ下のフォールバックへ進む
-    }
-
-    const rows = await fetchSheetRows(config?.calendar?.management?.eventsSheetUrl);
-    if (!rows) {
         return loadLocalEvents(config);
-    }
-
-    const parsed = rows
-        .map((row) => {
-            const c = row.c || [];
-            return {
-                id: String(c[0]?.v || ""),
-                type: String(c[1]?.v || "special"),
-                title: String(c[2]?.v || ""),
-                category: String(c[3]?.v || ""),
-                scheduleLabel: String(c[4]?.v || ""),
-                place: String(c[5]?.v || ""),
-                description: String(c[6]?.v || ""),
-                recruitFormUrl: String(c[7]?.v || "")
-            };
-        })
-        .filter((event) => event.title);
-
-    if (parsed.length > 0) {
-        saveLocalEvents(parsed);
-        return parsed;
     }
 
     return [];
@@ -330,7 +331,8 @@ function createLearningEventCard(event) {
         <h3>${event.title}</h3>
         <p><strong>開催日:</strong> ${event.scheduleLabel || "未設定"}</p>
         <p><strong>会場:</strong> ${event.place || "未設定"}</p>
-        <p><strong>参加人数:</strong> ${event.minParticipants ? `${event.minParticipants}〜${event.maxParticipants || ""}名` : "制限なし"}</p>
+        <p><strong>参加人数:</strong> ${event.maxParticipants ? `${Number(event.currentCount || 0)}/${event.maxParticipants}名` : `${Number(event.currentCount || 0)}名`}</p>
+        <p><strong>受付:</strong> ${event.entryEnabled === false || event.status === "closed" ? "受付終了" : "受付中"}</p>
         <p>${event.description || "詳細はコミニティカレンダーをご確認ください。"}</p>
         ${event.type === "special"
         ? '<button class="button" type="button" data-action="select-learning-event">この開催日に参加登録</button>'
@@ -411,7 +413,8 @@ function populateEventSelect(select, events) {
     events.forEach((event) => {
         const option = document.createElement("option");
         option.value = event.id;
-        option.textContent = `${event.title} (${event.scheduleLabel || "日時未設定"})`;
+        const closedLabel = event.entryEnabled === false || event.status === "closed" ? " [受付終了]" : "";
+        option.textContent = `${event.title} (${event.scheduleLabel || "日時未設定"})${closedLabel}`;
         select.appendChild(option);
     });
 }
@@ -430,6 +433,11 @@ function bindRecruitForm(config, events) {
     form.addEventListener("submit", async (e) => {
         e.preventDefault();
         const fd = new FormData(form);
+        const selectedEvent = events.find((event) => event.id === String(fd.get("eventId") || ""));
+        if (selectedEvent && (selectedEvent.entryEnabled === false || selectedEvent.status === "closed")) {
+            setStatusText(status, "受付終了のため参加登録できません。", true);
+            return;
+        }
         const payload = {
             type: "eventRecruit",
             eventId: String(fd.get("eventId") || ""),
@@ -671,7 +679,9 @@ function openRecruitFormForEvent(events, eventId) {
     }
 
     select.value = matched.id;
-    status.textContent = "";
+    status.textContent = matched.entryEnabled === false || matched.status === "closed"
+        ? "このイベントは受付終了です。"
+        : "";
     openRecruitModal();
 
     const nameInput = form.querySelector('input[name="name"]');
@@ -746,8 +756,12 @@ function renderLearningSelectedEvent(event, events, config) {
         ? `${event.minParticipants}〜${event.maxParticipants || ""}名`
         : "制限なし";
     description.textContent = event.description || "説明なし";
-    responseStatus.textContent = "参加・不参加を選んで記録してください。";
-    attendButton.disabled = false;
+    const entryState = event.entryEnabled === false || event.status === "closed" ? "受付終了" : "受付中";
+    const countText = event.maxParticipants
+        ? `${Number(event.currentCount || 0)}/${event.maxParticipants}名`
+        : `${Number(event.currentCount || 0)}名`;
+    responseStatus.textContent = `${entryState} / 参加人数 ${countText}`;
+    attendButton.disabled = entryState === "受付終了";
     declineButton.disabled = false;
     attendButton.onclick = async () => {
         await submitLearningAttendance(config, event, "attend", responseStatus);
@@ -1400,14 +1414,24 @@ function bindTownEventListSection() {
     async function loadList() {
         listStatus.textContent = "読み込み中...";
         try {
-            const res = await gasGet({ type: "getTownEvents" });
+            const res = await gasGet({ type: "getScheduleEvents" });
             const rows = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
-            currentEvents = rows;
-            renderTable(rows);
+            currentEvents = rows.map((row, index) => {
+                const timing = splitScheduleDateTime(row?.date || "", row?.time || "");
+                return {
+                    eventId: String(row?.id || row?.eventId || `TC-${index}`),
+                    title: String(row?.title || ""),
+                    start: timing.start,
+                    end: timing.end,
+                    place: String(row?.place || ""),
+                    description: String(row?.note || row?.description || "")
+                };
+            });
+            renderTable(currentEvents);
             if (selectAll) {
                 selectAll.checked = false;
             }
-            listStatus.textContent = `${rows.length}件の行事を表示しています。`;
+            listStatus.textContent = `${currentEvents.length}件の行事を表示しています。`;
         } catch (err) {
             listStatus.textContent = `【取得失敗】${err instanceof Error ? err.message : String(err)}`;
         }

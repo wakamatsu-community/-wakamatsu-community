@@ -12,6 +12,11 @@ var PHOTO_ARCHIVE_DAYS = 365;
 var INFORMATION_PHOTO_FOLDER_PATH = ["台帳関係", "情報写真"];
 var INFORMATION_PHOTO_CATEGORY = "情報写真";
 var API_BUILD = "2026-06-18-post-enabled";
+var JSON_CACHE_TTL_SECONDS = 21600;
+var EVENT_JSON_CACHE_KEYS = {
+  schedule: "schedule_events_json",
+  entry: "entry_events_json"
+};
 
 var LEDGER_HEADERS = {
   "役員_会員台帳": [
@@ -127,10 +132,10 @@ function doGet(e) {
             build: API_BUILD,
             method: "GET",
             hasDoPost: true,
-            supportedGet: ["health","login","getOpinions","getEvents","getTownEvents","calendar_events","getGallery","getEquipment","equipment_status"],
+            supportedGet: ["health","login","getOpinions","getEvents","getTownEvents","getScheduleEvents","getEntryEvents","calendar_events","getGallery","getEquipment","equipment_status"],
             supportedPost: [
               "health","login","addOpinion","addTownEvent","updateTownEvent","deleteTownEvent",
-              "addEvent","addRecurringEvent","joinEvent",
+              "addEvent","addRecurringEvent","joinEvent","registerEventEntry","createUserEvent",
               "reserveEquipment","uploadPhoto","createPhotoFolder","addPeople","addEquipmentMaster",
               "uploadDocument"
             ]
@@ -144,8 +149,12 @@ function doGet(e) {
         return jsonResponse_({ ok: true, action: action, data: getEvents_() });
       case "getTownEvents":
         return jsonResponse_({ ok: true, action: action, data: getTownEvents_() });
+      case "getScheduleEvents":
+        return jsonResponse_({ ok: true, action: action, data: getScheduleEvents() });
+      case "getEntryEvents":
+        return jsonResponse_({ ok: true, action: action, data: getEntryEvents() });
       case "calendar_events":
-        return jsonResponse_({ ok: true, action: action, data: getCalendarEventsForFrontend_() });
+        return jsonResponse_({ ok: true, action: action, data: getScheduleEvents() });
       case "getGallery":
         return jsonResponse_({ ok: true, action: action, data: getGallery_() });
       case "getEquipment":
@@ -157,7 +166,7 @@ function doGet(e) {
           ok: false,
           error: "未対応のactionです。",
           receivedAction: action,
-          supportedActions: ["login","getOpinions","getEvents","calendar_events","getGallery","getEquipment","equipment_status"]
+          supportedActions: ["login","getOpinions","getEvents","getTownEvents","getScheduleEvents","getEntryEvents","calendar_events","getGallery","getEquipment","equipment_status"]
         });
     }
   } catch (err) {
@@ -200,7 +209,11 @@ function doPost(e) {
       case "addRecurringEvent":
         return jsonResponse_({ ok: true, action: action, data: addRecurringEvent_(body) });
       case "joinEvent":
-        return jsonResponse_({ ok: true, action: action, data: joinEvent_(body) });
+        return jsonResponse_({ ok: true, action: action, data: registerEventEntry(body.eventId, body) });
+      case "registerEventEntry":
+        return jsonResponse_({ ok: true, action: action, data: registerEventEntry(body.eventId, body) });
+      case "createUserEvent":
+        return jsonResponse_({ ok: true, action: action, data: createUserEvent(body) });
       case "reserveEquipment":
         return jsonResponse_({ ok: true, action: action, data: reserveEquipment_(body) });
       case "uploadPhoto":
@@ -254,6 +267,237 @@ function getLedgerSpreadsheet() {
   return openSpreadsheetByName_(LEDGER_SPREADSHEET_NAME);
 }
 
+function logJsonCacheError_(label, err) {
+  Logger.log(label + ": " + String(err && err.message || err));
+}
+
+function safeParseJson_(text) {
+  if (!text) { return null; }
+  try {
+    return JSON.parse(String(text));
+  } catch (err) {
+    return null;
+  }
+}
+
+function readJsonCache_(cacheKey) {
+  var cache = CacheService.getScriptCache().get(cacheKey);
+  var parsed = safeParseJson_(cache);
+  if (parsed !== null) { return parsed; }
+
+  var backup = PropertiesService.getScriptProperties().getProperty(cacheKey);
+  parsed = safeParseJson_(backup);
+  if (parsed !== null) {
+    try {
+      CacheService.getScriptCache().put(cacheKey, backup, JSON_CACHE_TTL_SECONDS);
+    } catch (err) {
+      logJsonCacheError_("readJsonCache_ cache restore failed for " + cacheKey, err);
+    }
+    return parsed;
+  }
+
+  return null;
+}
+
+function writeJsonCache_(cacheKey, value) {
+  var json = JSON.stringify(Array.isArray(value) ? value : []);
+  try {
+    CacheService.getScriptCache().put(cacheKey, json, JSON_CACHE_TTL_SECONDS);
+  } catch (err) {
+    logJsonCacheError_("writeJsonCache_ cache put failed for " + cacheKey, err);
+  }
+  PropertiesService.getScriptProperties().setProperty(cacheKey, json);
+  return JSON.parse(json);
+}
+
+function formatTimeRange_(start, end) {
+  if (!start) { return ""; }
+  var pad = function(n) { return String(n).padStart(2, "0"); };
+  var startText = pad(start.getHours()) + ":" + pad(start.getMinutes());
+  if (!end) { return startText; }
+  var endText = pad(end.getHours()) + ":" + pad(end.getMinutes());
+  return startText === endText ? startText : startText + "-" + endText;
+}
+
+function buildScheduleEventsJson_() {
+  var rows = readSheetAsObjects_("町内行事予定");
+  var updatedAt = nowIso_();
+
+  return rows.map(function(row, index) {
+    var start = parseDateOrNull_(row["開始日時"]);
+    if (!start) { return null; }
+    var end = parseDateOrNull_(row["終了日時"]);
+    return {
+      id: String(row["イベントID"] || "TC-" + index),
+      date: toDate_(start),
+      title: String(row["タイトル"] || ""),
+      time: formatTimeRange_(start, end),
+      place: String(row["場所"] || ""),
+      note: String(row["説明"] || ""),
+      category: "町内行事",
+      updatedAt: updatedAt
+    };
+  }).filter(function(item) { return !!item && !!item.date; });
+}
+
+function buildEntryEventsJson_() {
+  var events = readSheetAsObjects_("イベント企画");
+  var participants = readSheetAsObjects_("イベント参加");
+  var updatedAt = nowIso_();
+
+  return events.map(function(row, index) {
+    var start = parseDateOrNull_(row["開始日時"]);
+    if (!start) { return null; }
+    var end = parseDateOrNull_(row["終了日時"]);
+    var eventId = String(row["イベントID"] || "EV-" + index);
+    var capacity = Number(row["最大人数"] || 0);
+    var currentCount = participants.filter(function(entry) {
+      return String(entry["イベントID"] || "").trim() === eventId;
+    }).length;
+    var deadline = toIso_(start);
+    var closed = start.getTime() <= new Date().getTime() || (capacity > 0 && currentCount >= capacity);
+
+    return {
+      eventId: eventId,
+      date: toDate_(start),
+      title: String(row["タイトル"] || ""),
+      time: formatTimeRange_(start, end),
+      place: String(row["場所"] || ""),
+      description: String(row["説明"] || ""),
+      capacity: capacity,
+      currentCount: currentCount,
+      entryEnabled: !closed,
+      deadline: deadline,
+      status: closed ? "closed" : "open",
+      updatedAt: updatedAt
+    };
+  }).filter(function(item) { return !!item && !!item.date; });
+}
+
+function rebuildScheduleEventsJson() {
+  var payload = buildScheduleEventsJson_();
+  return writeJsonCache_(EVENT_JSON_CACHE_KEYS.schedule, payload);
+}
+
+function rebuildEntryEventsJson() {
+  var payload = buildEntryEventsJson_();
+  return writeJsonCache_(EVENT_JSON_CACHE_KEYS.entry, payload);
+}
+
+function getScheduleEvents() {
+  var cached = readJsonCache_(EVENT_JSON_CACHE_KEYS.schedule);
+  if (cached !== null) { return Array.isArray(cached) ? cached : []; }
+
+  try {
+    return rebuildScheduleEventsJson();
+  } catch (err) {
+    logJsonCacheError_("getScheduleEvents rebuild failed", err);
+    var fallback = readJsonCache_(EVENT_JSON_CACHE_KEYS.schedule);
+    return Array.isArray(fallback) ? fallback : [];
+  }
+}
+
+function getEntryEvents() {
+  var cached = readJsonCache_(EVENT_JSON_CACHE_KEYS.entry);
+  if (cached !== null) { return Array.isArray(cached) ? cached : []; }
+
+  try {
+    return rebuildEntryEventsJson();
+  } catch (err) {
+    logJsonCacheError_("getEntryEvents rebuild failed", err);
+    var fallback = readJsonCache_(EVENT_JSON_CACHE_KEYS.entry);
+    return Array.isArray(fallback) ? fallback : [];
+  }
+}
+
+function refreshScheduleEventsCache_() {
+  try {
+    rebuildScheduleEventsJson();
+    return true;
+  } catch (err) {
+    logJsonCacheError_("refreshScheduleEventsCache_", err);
+    return false;
+  }
+}
+
+function refreshEntryEventsCache_() {
+  try {
+    rebuildEntryEventsJson();
+    return true;
+  } catch (err) {
+    logJsonCacheError_("refreshEntryEventsCache_", err);
+    return false;
+  }
+}
+
+function scheduleJsonToLegacyTownEvent_(event, index) {
+  var startText = String(event && event.date || "");
+  var timeText = String(event && event.time || "");
+  var start = startText ? new Date(startText + "T00:00:00") : null;
+  if (start && timeText) {
+    var timeMatch = timeText.match(/^(\d{1,2}):(\d{2})/);
+    if (timeMatch) {
+      start.setHours(Number(timeMatch[1]), Number(timeMatch[2]), 0, 0);
+    }
+  }
+
+  return {
+    eventId: String(event && event.id || "EV-" + index),
+    title: String(event && event.title || ""),
+    start: start ? toIso_(start) : "",
+    end: "",
+    place: String(event && event.place || ""),
+    description: String(event && event.note || ""),
+    category: String(event && event.category || "町内行事"),
+    updatedAt: String(event && event.updatedAt || "")
+  };
+}
+
+function entryJsonToLegacyEvent_(event, index) {
+  var startText = String(event && event.date || "");
+  var timeText = String(event && event.time || "");
+  var start = startText ? new Date(startText + "T00:00:00") : null;
+  var end = null;
+  if (start && timeText) {
+    var timeParts = timeText.split(/\s*[-〜~]\s*/);
+    var startMatch = timeParts[0] && timeParts[0].match(/^(\d{1,2}):(\d{2})/);
+    if (startMatch) {
+      start.setHours(Number(startMatch[1]), Number(startMatch[2]), 0, 0);
+    }
+    if (timeParts[1]) {
+      var endMatch = timeParts[1].match(/^(\d{1,2}):(\d{2})/);
+      if (endMatch) {
+        end = new Date(start.getTime());
+        end.setHours(Number(endMatch[1]), Number(endMatch[2]), 0, 0);
+      }
+    }
+  }
+
+  var scheduleLabel = String(event && event.date || "");
+  if (timeText) {
+    scheduleLabel += scheduleLabel ? " " + timeText : timeText;
+  }
+
+  return {
+    id: String(event && event.eventId || "EV-" + index),
+    type: "special",
+    title: String(event && event.title || ""),
+    category: String(event && event.category || "コミニティ"),
+    scheduleLabel: scheduleLabel,
+    place: String(event && event.place || ""),
+    description: String(event && event.description || ""),
+    minParticipants: Number(event && event.capacity || 0) > 0 ? 1 : 0,
+    maxParticipants: Number(event && event.capacity || 0),
+    start: start ? toIso_(start) : "",
+    end: end ? toIso_(end) : "",
+    recruitFormUrl: "",
+    currentCount: Number(event && event.currentCount || 0),
+    entryEnabled: !!(event && event.entryEnabled),
+    deadline: String(event && event.deadline || ""),
+    status: String(event && event.status || "")
+  };
+}
+
 // ============================================================
 // GET ハンドラー群
 // ============================================================
@@ -282,20 +526,7 @@ function getOpinions_() {
 
 function getEvents_() {
   try {
-    var spreadsheet = getLedgerSpreadsheet();
-    var sheet = getOrCreateSheet_(spreadsheet, "イベント企画");
-    var values = sheet.getDataRange().getValues();
-    if (!values || values.length <= 1) { return { success: true, data: [] }; }
-
-    var headers = values[0].map(function(h) { return String(h || "").trim(); });
-    var records = values.slice(1)
-      .filter(function(row) { return row.some(function(c) { return String(c || "") !== ""; }); })
-      .map(function(row) {
-        var obj = {};
-        headers.forEach(function(header, i) { obj[header] = row[i]; });
-        return obj;
-      });
-    return { success: true, data: records };
+    return { success: true, data: getEntryEvents().map(entryJsonToLegacyEvent_) };
   } catch (err) {
     return { success: false, error: String(err && err.message || err) };
   }
@@ -306,17 +537,7 @@ function getGallery_() {
 }
 
 function getCalendarEventsForFrontend_() {
-  var rows = readSheetAsObjects_("町内行事予定");
-  return rows.map(function(row, index) {
-    return {
-      id: String(row["イベントID"] || "EV-" + index),
-      title: String(row["タイトル"] || ""),
-      start: toIsoTextOrOriginal_(row["開始日時"]),
-      end: toIsoTextOrOriginal_(row["終了日時"]),
-      location: String(row["場所"] || ""),
-      description: String(row["説明"] || "")
-    };
-  }).filter(function(item) { return !!item.start; });
+  return getScheduleEvents();
 }
 
 function getEquipmentStatusForFrontend_() {
@@ -457,18 +678,7 @@ function addOpinion_(params) {
 
 function getTownEvents_() {
   try {
-    var rows = readSheetAsObjects_("町内行事予定");
-    return rows.map(function(row) {
-      return {
-        eventId:     String(row["イベントID"]     || ""),
-        title:       String(row["タイトル"]       || ""),
-        start:       toIsoTextOrOriginal_(row["開始日時"]),
-        end:         toIsoTextOrOriginal_(row["終了日時"]),
-        place:       String(row["場所"]         || ""),
-        creator:     String(row["企画者"]       || ""),
-        description: String(row["説明"]         || "")
-      };
-    }).filter(function(r) { return !!r.eventId; });
+    return getScheduleEvents().map(scheduleJsonToLegacyTownEvent_);
   } catch (err) {
     return { error: String(err && err.message || err) };
   }
@@ -489,6 +699,7 @@ function deleteTownEvent_(params) {
     for (var i = values.length - 1; i >= 1; i--) {
       if (String(values[i][idCol] || "").trim() === eventId) {
         sheet.deleteRow(i + 1);
+        refreshScheduleEventsCache_();
         return { success: true, message: "削除しました: " + eventId };
       }
     }
@@ -540,6 +751,7 @@ function updateTownEvent_(params) {
       return Object.prototype.hasOwnProperty.call(fieldMap, h) ? fieldMap[h] : String(values[rowIndex - 1][colIdx] || "");
     });
     sheet.getRange(rowIndex, 1, 1, newRow.length).setValues([newRow]);
+    refreshScheduleEventsCache_();
 
     return { success: true, message: "更新しました: " + eventId };
   } catch (err) {
@@ -583,6 +795,8 @@ function addTownEvent_(params) {
       title, creator, place, description
     ]);
 
+    refreshScheduleEventsCache_();
+
     return {
       success: true,
       eventId: eventId,
@@ -596,7 +810,11 @@ function addTownEvent_(params) {
 }
 
 function addEvent_(params) {
-  return addEventToSheet_(params, "イベント企画");
+  return createUserEvent(params);
+}
+
+function createUserEvent(formData) {
+  return addEventToSheet_(formData, "イベント企画");
 }
 
 function addEventToSheet_(params, targetSheetName) {
@@ -637,6 +855,8 @@ function addEventToSheet_(params, targetSheetName) {
       Utilities.formatDate(end,   Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss"),
       title, creator, place, minParticipants, maxParticipants, description
     ]);
+
+    refreshEntryEventsCache_();
 
     return {
       success: true,
@@ -700,6 +920,8 @@ function addRecurringEvent_(params) {
       if (calEventId) { calendarLinkedCount += 1; }
     });
 
+    refreshScheduleEventsCache_();
+
     return {
       success: true,
       count: createdIds.length,
@@ -716,25 +938,29 @@ function addRecurringEvent_(params) {
 }
 
 function joinEvent_(params) {
-  try {
-    var eventId = String(params.eventId || "").trim();
-    var name    = String(params.name    || "").trim();
-    var contact = String(params.contact || "").trim();
+  return registerEventEntry(params.eventId, params);
+}
 
-    if (!eventId || !name || !contact) { throw new Error("eventId, name, contact は必須です。"); }
+function registerEventEntry(eventId, formData) {
+  try {
+    var normalizedEventId = String(eventId || "").trim();
+    var name    = String((formData && formData.name)    || "").trim();
+    var contact = String((formData && formData.contact) || "").trim();
+
+    if (!normalizedEventId || !name || !contact) { throw new Error("eventId, name, contact は必須です。"); }
 
     var spreadsheet = getLedgerSpreadsheet();
     var eventRows   = readSheetAsObjects_("イベント企画");
     var targetEvent = eventRows.filter(function(row) {
-      return String(row["イベントID"] || "").trim() === eventId;
+      return String(row["イベントID"] || "").trim() === normalizedEventId;
     })[0];
 
-    if (!targetEvent) { throw new Error("指定イベントが見つかりません: " + eventId); }
+    if (!targetEvent) { throw new Error("指定イベントが見つかりません: " + normalizedEventId); }
 
     var maxParticipants = Number(targetEvent["最大人数"] || 0);
     var joinRows        = readSheetAsObjects_("イベント参加");
     var currentCount    = joinRows.filter(function(row) {
-      return String(row["イベントID"] || "").trim() === eventId;
+      return String(row["イベントID"] || "").trim() === normalizedEventId;
     }).length;
 
     if (maxParticipants > 0 && currentCount >= maxParticipants) {
@@ -744,9 +970,10 @@ function joinEvent_(params) {
     var participantSheet = getOrCreateSheet_(spreadsheet, "イベント参加");
     // 申込ID, イベントID, 参加者名, 連絡先, 登録日時
     participantSheet.appendRow([
-      "EN-" + new Date().getTime(), eventId, name, contact,
+      "EN-" + new Date().getTime(), normalizedEventId, name, contact,
       Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss")
     ]);
+    refreshEntryEventsCache_();
     return { success: true, message: "参加登録が完了しました" };
   } catch (err) {
     return { success: false, error: String(err && err.message || err) };

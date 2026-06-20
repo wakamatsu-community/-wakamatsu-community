@@ -26,6 +26,30 @@ function toDatetimeLocalValue(value) {
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function buildScheduleTiming(dateValue, timeValue) {
+    const date = String(dateValue || "").trim();
+    const time = String(timeValue || "").trim();
+    if (!date) {
+        return { start: "", end: "", allDay: false };
+    }
+
+    const buildIso = (text) => {
+        if (!text) {
+            return date;
+        }
+        const matched = String(text).match(/^(\d{1,2}):(\d{2})/);
+        if (!matched) {
+            return date;
+        }
+        return `${date}T${matched[1].padStart(2, "0")}:${matched[2]}:00`;
+    };
+
+    const parts = time.split(/\s*[-〜~]\s*/);
+    const start = buildIso(parts[0] || time);
+    const end = parts[1] ? buildIso(parts[1]) : "";
+    return { start, end, allDay: !time };
+}
+
 function loadLocalAddedEvents() {
     try {
         const raw = localStorage.getItem(LOCAL_ADDED_EVENTS_KEY);
@@ -53,9 +77,10 @@ function normalizeGasCalendarEvents(payload) {
                 : [];
 
     return rows.map((item, index) => {
-        const startValue = item?.start || item?.startDateTime || item?.startDate || "";
-        const endValue = item?.end || item?.endDateTime || item?.endDate || "";
-        const allDay = Boolean(item?.allDay || (String(startValue).length === 10 && !String(startValue).includes("T")));
+        const timing = buildScheduleTiming(item?.date || item?.startDate || "", item?.time || "");
+        const startValue = item?.start || item?.startDateTime || item?.startDate || timing.start;
+        const endValue = item?.end || item?.endDateTime || item?.endDate || timing.end;
+        const allDay = Boolean(item?.allDay || timing.allDay || (String(startValue).length === 10 && !String(startValue).includes("T")));
         return {
             id: String(item?.id || `gas-${index}-${Date.now()}`),
             title: item?.title || item?.summary || "(タイトル未設定)",
@@ -65,8 +90,9 @@ function normalizeGasCalendarEvents(payload) {
             backgroundColor: "#247246",
             borderColor: "#247246",
             extendedProps: {
-                location: item?.location || "",
-                description: item?.description || "",
+                location: item?.location || item?.place || "",
+                description: item?.description || item?.note || "",
+                category: item?.category || "",
                 source: "gas"
             }
         };
@@ -75,7 +101,7 @@ function normalizeGasCalendarEvents(payload) {
 
 async function fetchCalendarEventsFromGas() {
     try {
-        const payload = await gasGet({ type: "calendar_events" });
+        const payload = await gasGet({ type: "getScheduleEvents" });
         return normalizeGasCalendarEvents(payload);
     } catch {
         return [];

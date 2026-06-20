@@ -66,28 +66,32 @@ function isCurrentMonth(date) {
 }
 
 function normalizeTownEventForHome(event) {
-    const startValue = String(event?.start || "");
-    const date = startValue ? new Date(startValue) : null;
-    const pad = (n) => String(n).padStart(2, "0");
-    const scheduleLabel = date && !Number.isNaN(date.getTime())
-        ? `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+    const dateText = String(event?.date || "");
+    const timeText = String(event?.time || "");
+    const date = dateText ? new Date(`${dateText}T00:00:00`) : null;
+    const scheduleLabel = dateText
+        ? (timeText ? `${dateText} ${timeText}` : dateText)
         : "日時未設定";
+    const start = date && !Number.isNaN(date.getTime())
+        ? `${dateText}T00:00:00`
+        : "";
 
     return {
         id: String(event?.eventId || event?.id || ""),
         type: "town",
         title: String(event?.title || ""),
-        description: String(event?.description || ""),
+        description: String(event?.note || event?.description || ""),
         scheduleLabel,
         category: "町内行事",
         sourceLabel: "町内行事",
-        date: date && !Number.isNaN(date.getTime()) ? date : null
+        date: date && !Number.isNaN(date.getTime()) ? date : null,
+        start
     };
 }
 
 async function loadTownEventsForHome() {
     try {
-        const response = await gasGet({ type: "getTownEvents" });
+        const response = await gasGet({ type: "getScheduleEvents" });
         const rows = Array.isArray(response?.data) ? response.data : (Array.isArray(response) ? response : []);
         return rows.map(normalizeTownEventForHome).filter((event) => event.title && event.date);
     } catch {
