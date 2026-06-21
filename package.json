@@ -1,0 +1,19 @@
+{
+  "name": "wakamatsu-community-hp",
+  "private": true,
+  "version": "1.0.0",
+  "description": "若松町内会ホームページ用の補助スクリプト",
+  "type": "commonjs",
+  "scripts": {
+    "migrate:firestore": "node scripts/migrate_excel_to_firestore.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "firebase-admin": "^13.6.0",
+    "xlsx": "^0.18.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

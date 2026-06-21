@@ -104,6 +104,96 @@ GAS 連携も同様に未注入です。GAS 接続を確認する場合は、必
 - `FIREBASE_APP_ID`（Firebaseを使う場合）
 - `FIREBASE_MEASUREMENT_ID`（任意）
 
+Firestore を Node サーバー経由で読む構成に切り替えた場合は、上の Firebase Web 用設定は不要です。必要なのは `FIREBASE_SERVICE_ACCOUNT` だけです。
+
+---
+
+## Excel から Firestore への移行
+
+`福山市若松町内会_管理台帳.xlsx` の `町内行事予定` シートを `events` コレクションへ、`イベント企画` シートを `eventPlanning` コレクションへ投入する Node.js スクリプトを用意しています。各行の `イベントID` がドキュメント ID になります。
+
+### 1. 依存関係を入れる
+
+```bash
+npm install
+```
+
+### 2. Firebase サービスアカウントを用意する
+
+スクリプトは `FIREBASE_SERVICE_ACCOUNT` を参照します。既に `.env.local` に同名の設定がある場合は、その値を優先的に読み取ります。
+
+PowerShell で直接設定する場合は、実行前に次のように入れてください。
+
+```powershell
+$env:FIREBASE_SERVICE_ACCOUNT = Get-Content .\.firebase-service-account.json -Raw
+```
+
+### 3. 実行する
+
+```bash
+npm run migrate:firestore -- --file "福山市若松町内会_管理台帳.xlsx"
+```
+
+書き込み前に内容だけ確認したい場合は dry-run を使えます。
+
+```bash
+npm run migrate:firestore -- --file "福山市若松町内会_管理台帳.xlsx" --dry-run
+```
+
+dry-run は Firestore に接続しないため、`FIREBASE_SERVICE_ACCOUNT` の設定なしでも確認できます。
+
+### 4. 想定されるログ
+
+- ヘッダー行の検出結果
+- スキップした行数
+- `イベントID` の重複警告
+- Firestore 書き込みの成功・失敗ログ
+
+---
+
+## Firestore を使う実行方法
+
+この構成では、ブラウザから Firestore を直接読むのではなく、`FIREBASE_SERVICE_ACCOUNT` を使う Node.js サーバー経由で読み込みます。フロント側に Firebase Web 用設定は不要です。
+
+### 1. 依存関係を入れる
+
+```bash
+npm install
+```
+
+### 2. サーバーを起動する
+
+```bash
+npm start
+```
+
+### 3. ブラウザで確認する
+
+```text
+http://localhost:3000/
+```
+
+API は次のように動きます。
+
+```text
+GET /api/firestore/events
+GET /api/firestore/eventPlanning
+GET /api/firestore/events/<docId>
+```
+
+### 4. 必要な環境変数
+
+- `FIREBASE_SERVICE_ACCOUNT` のみで足ります
+- `FIREBASE_API_KEY` などの Web 用設定は不要です
+
+### 5. ローカルで確認できること
+
+- Firestore への読み取り
+- 画面への表示
+- ドキュメント ID ごとの取得
+
+GitHub Pages のような完全静的ホスティングでは API サーバーを置けないため、本番でこの方式を使う場合は Node が動くホスティングに切り替える必要があります。
+
 ---
 
 ## URL の設定変更（js/config.js）

@@ -1,5 +1,6 @@
 import { SITE_CONFIG } from "./config.js";
 import { initCalendarPage } from "./calendar.js";
+import { fetchFirestoreCollection } from "./firestore-api.js";
 import { initDocumentsPage } from "./drive.js";
 import { initMapPage } from "./map.js";
 import { initFormsPage } from "./form.js";
@@ -7,7 +8,6 @@ import { initGalleryPage } from "./gallery.js";
 import { initEquipmentPage, initAdminReturnAlerts } from "./equipment.js";
 import { initManagedEventsPage, initAdminCommunityForms, loadAllManagedEvents } from "./community-admin.js";
 import { initOpinionExchangePage, initAdminOpinionExchange } from "./opinion-exchange.js";
-import { gasGet } from "./gas-api.js";
 
 function setupNavigation() {
     const current = location.pathname.split("/").pop() || "index.html";
@@ -91,10 +91,11 @@ function normalizeTownEventForHome(event) {
 
 async function loadTownEventsForHome() {
     try {
-        const response = await gasGet({ type: "getScheduleEvents" });
-        const rows = Array.isArray(response?.data) ? response.data : (Array.isArray(response) ? response : []);
+        const response = await fetchFirestoreCollection("events", { limit: 200 });
+        const rows = Array.isArray(response?.data) ? response.data : [];
         return rows.map(normalizeTownEventForHome).filter((event) => event.title && event.date);
-    } catch {
+    } catch (error) {
+        console.error("Failed to load town events from Firestore:", error);
         return [];
     }
 }

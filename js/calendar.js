@@ -1,4 +1,5 @@
-import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
+import { gasPost, getGasUrl } from "./gas-api.js";
+import { fetchFirestoreCollection } from "./firestore-api.js";
 import { loadAllManagedEvents } from "./community-admin.js";
 
 const LOCAL_ADDED_EVENTS_KEY = "wakamatsu_calendar_added_events_v1";
@@ -101,9 +102,10 @@ function normalizeGasCalendarEvents(payload) {
 
 async function fetchCalendarEventsFromGas() {
     try {
-        const payload = await gasGet({ type: "getScheduleEvents" });
+        const payload = await fetchFirestoreCollection("events", { limit: 200 });
         return normalizeGasCalendarEvents(payload);
-    } catch {
+    } catch (error) {
+        console.error("Failed to load calendar events from Firestore:", error);
         return [];
     }
 }

@@ -1,4 +1,5 @@
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
+import { fetchFirestoreCollection } from "./firestore-api.js";
 
 const EVENTS_STORE_KEY = "wakamatsu_managed_events_v1";
 
@@ -171,13 +172,14 @@ function normalizeManagedEventsFromGas(payload) {
 
 async function loadManagedEvents(config) {
     try {
-        const payload = await gasGet({ type: "getEntryEvents" });
+        const payload = await fetchFirestoreCollection("eventPlanning", { limit: 200 });
         const parsedFromGas = normalizeManagedEventsFromGas(payload);
         if (parsedFromGas.length > 0) {
             saveLocalEvents(parsedFromGas);
             return parsedFromGas;
         }
-    } catch {
+    } catch (error) {
+        console.error("Failed to load managed events from Firestore:", error);
         return loadLocalEvents(config);
     }
 
@@ -1414,8 +1416,8 @@ function bindTownEventListSection() {
     async function loadList() {
         listStatus.textContent = "読み込み中...";
         try {
-            const res = await gasGet({ type: "getScheduleEvents" });
-            const rows = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
+            const res = await fetchFirestoreCollection("events", { limit: 200 });
+            const rows = Array.isArray(res?.data) ? res.data : [];
             currentEvents = rows.map((row, index) => {
                 const timing = splitScheduleDateTime(row?.date || "", row?.time || "");
                 return {
@@ -1433,6 +1435,7 @@ function bindTownEventListSection() {
             }
             listStatus.textContent = `${currentEvents.length}件の行事を表示しています。`;
         } catch (err) {
+            console.error("Failed to load town events from Firestore:", err);
             listStatus.textContent = `【取得失敗】${err instanceof Error ? err.message : String(err)}`;
         }
     }
