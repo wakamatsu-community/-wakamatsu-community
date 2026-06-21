@@ -1,6 +1,6 @@
 import { SITE_CONFIG } from "./config.js";
 import { initCalendarPage } from "./calendar.js";
-import { fetchFirestoreCollection } from "./firestore-api.js";
+import { gasGet } from "./gas-api.js";
 import { initDocumentsPage } from "./drive.js";
 import { initMapPage } from "./map.js";
 import { initFormsPage } from "./form.js";
@@ -66,7 +66,9 @@ function isCurrentMonth(date) {
 }
 
 function normalizeTownEventForHome(event) {
-    const dateText = String(event?.date || "");
+    const startDate = String(event?.start || "");
+    const fallbackDate = startDate ? startDate.slice(0, 10) : "";
+    const dateText = String(event?.date || fallbackDate || "");
     const timeText = String(event?.time || "");
     const date = dateText ? new Date(`${dateText}T00:00:00`) : null;
     const scheduleLabel = dateText
@@ -91,11 +93,11 @@ function normalizeTownEventForHome(event) {
 
 async function loadTownEventsForHome() {
     try {
-        const response = await fetchFirestoreCollection("events", { limit: 200 });
+        const response = await gasGet({ action: "getTownEvents" });
         const rows = Array.isArray(response?.data) ? response.data : [];
         return rows.map(normalizeTownEventForHome).filter((event) => event.title && event.date);
     } catch (error) {
-        console.error("Failed to load town events from Firestore:", error);
+        console.error("Failed to load town events from GAS:", error);
         return [];
     }
 }

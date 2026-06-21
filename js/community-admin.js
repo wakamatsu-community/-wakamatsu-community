@@ -1,5 +1,4 @@
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
-import { fetchFirestoreCollection } from "./firestore-api.js";
 
 const EVENTS_STORE_KEY = "wakamatsu_managed_events_v1";
 
@@ -138,14 +137,37 @@ function splitScheduleDateTime(dateValue, timeValue) {
 }
 
 function normalizeManagedEventsFromGas(payload) {
-    const rows = Array.isArray(payload?.data)
-        ? payload.data
-        : Array.isArray(payload)
-            ? payload
-            : [];
+    const rows = Array.isArray(payload?.data?.data)
+        ? payload.data.data
+        : Array.isArray(payload?.data)
+            ? payload.data
+            : Array.isArray(payload)
+                ? payload
+                : [];
 
     return rows
         .map((row, index) => {
+            if (row && row.scheduleLabel) {
+                return {
+                    id: String(row?.id || row?.eventId || `EV-${index}`),
+                    type: String(row?.type || "special"),
+                    title: String(row?.title || ""),
+                    category: String(row?.category || "コミニティ"),
+                    scheduleLabel: String(row?.scheduleLabel || ""),
+                    place: String(row?.place || ""),
+                    description: String(row?.description || ""),
+                    minParticipants: Number(row?.minParticipants || 0),
+                    maxParticipants: Number(row?.maxParticipants || 0),
+                    currentCount: Number(row?.currentCount || 0),
+                    entryEnabled: row?.entryEnabled !== false,
+                    deadline: String(row?.deadline || ""),
+                    status: String(row?.status || ""),
+                    start: String(row?.start || ""),
+                    end: String(row?.end || ""),
+                    recruitFormUrl: String(row?.recruitFormUrl || "")
+                };
+            }
+
             const timing = splitScheduleDateTime(row?.date || "", row?.time || "");
             const capacity = Number(row?.capacity || 0);
             return {
@@ -172,14 +194,14 @@ function normalizeManagedEventsFromGas(payload) {
 
 async function loadManagedEvents(config) {
     try {
-        const payload = await fetchFirestoreCollection("eventPlanning", { limit: 200 });
+        const payload = await gasGet({ action: "getEvents" });
         const parsedFromGas = normalizeManagedEventsFromGas(payload);
         if (parsedFromGas.length > 0) {
             saveLocalEvents(parsedFromGas);
             return parsedFromGas;
         }
     } catch (error) {
-        console.error("Failed to load managed events from Firestore:", error);
+        console.error("Failed to load managed events from GAS:", error);
         return loadLocalEvents(config);
     }
 
@@ -1416,15 +1438,17 @@ function bindTownEventListSection() {
     async function loadList() {
         listStatus.textContent = "読み込み中...";
         try {
-            const res = await fetchFirestoreCollection("events", { limit: 200 });
+            const res = await gasGet({ action: "getTownEvents" });
             const rows = Array.isArray(res?.data) ? res.data : [];
             currentEvents = rows.map((row, index) => {
                 const timing = splitScheduleDateTime(row?.date || "", row?.time || "");
+                const start = String(row?.start || timing.start || "");
+                const end = String(row?.end || timing.end || "");
                 return {
                     eventId: String(row?.id || row?.eventId || `TC-${index}`),
                     title: String(row?.title || ""),
-                    start: timing.start,
-                    end: timing.end,
+                    start,
+                    end,
                     place: String(row?.place || ""),
                     description: String(row?.note || row?.description || "")
                 };
@@ -1435,7 +1459,7 @@ function bindTownEventListSection() {
             }
             listStatus.textContent = `${currentEvents.length}件の行事を表示しています。`;
         } catch (err) {
-            console.error("Failed to load town events from Firestore:", err);
+            console.error("Failed to load town events from GAS:", err);
             listStatus.textContent = `【取得失敗】${err instanceof Error ? err.message : String(err)}`;
         }
     }
