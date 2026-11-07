@@ -21,6 +21,7 @@ IGNORED_DIRS = {
     "secrets",
     "venv",
     ".venv",
+    "node_modules",
 }
 IGNORED_FILES = {
     ".env",

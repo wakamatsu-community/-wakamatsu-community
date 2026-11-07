@@ -1,15 +1,4 @@
 import { SITE_CONFIG } from "./config.js";
-import { initCalendarPage } from "./calendar.js";
-import { gasGet } from "./gas-api.js";
-import { initDocumentsPage } from "./drive.js";
-import { initMapPage } from "./map.js";
-import { initFormsPage } from "./form.js";
-import { initGalleryPage } from "./gallery.js";
-import { initEquipmentPage, initAdminReturnAlerts } from "./equipment.js";
-import { initManagedEventsPage, initAdminCommunityForms, loadAllManagedEvents } from "./community-admin.js";
-import { initOpinionExchangePage, initAdminOpinionExchange } from "./opinion-exchange.js";
-import { db, isFirebaseReady, auth, onAuthStateChanged, getCurrentUserProfile } from "./firebase-init.js";
-import { collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 function setupNavigation() {
     const current = location.pathname.split("/").pop() || "index.html";
@@ -30,26 +19,33 @@ function setupNavigation() {
         });
     }
 
-    // Firebase ログイン状態の監視とナビ表示更新
-    if (isFirebaseReady && auth) {
-        onAuthStateChanged(auth, async (user) => {
-            const authPills = document.querySelectorAll(".auth-pill, #nav-auth-link");
-            if (user) {
-                const profile = await getCurrentUserProfile();
-                const displayName = profile?.name || user.displayName || user.email || "会員";
-                const roleBadge = profile?.role === "officer" ? "（役員）" : "";
-                authPills.forEach((el) => {
-                    el.textContent = `👤 ${displayName}${roleBadge}`;
-                    el.setAttribute("href", "admin.html");
-                });
-            } else {
-                authPills.forEach((el) => {
-                    el.textContent = "ログイン";
-                    el.setAttribute("href", "admin.html");
+    // Firebase ログイン状態の監視 (初期描画を一切ブロックしないよう遅延非同期ロード)
+    setTimeout(async () => {
+        try {
+            const { isFirebaseReady, auth, onAuthStateChanged, getCurrentUserProfile } = await import("./firebase-init.js");
+            if (isFirebaseReady && auth) {
+                onAuthStateChanged(auth, async (user) => {
+                    const authPills = document.querySelectorAll(".auth-pill, #nav-auth-link");
+                    if (user) {
+                        const profile = await getCurrentUserProfile();
+                        const displayName = profile?.name || user.displayName || user.email || "会員";
+                        const roleBadge = profile?.role === "officer" ? "（役員）" : "";
+                        authPills.forEach((el) => {
+                            el.textContent = `👤 ${displayName}${roleBadge}`;
+                            el.setAttribute("href", "admin.html");
+                        });
+                    } else {
+                        authPills.forEach((el) => {
+                            el.textContent = "ログイン";
+                            el.setAttribute("href", "admin.html");
+                        });
+                    }
                 });
             }
-        });
-    }
+        } catch {
+            // 認証初期化エラーはナビゲーションに影響させない
+        }
+    }, 100);
 }
 
 function isCommunityEvent(event) {
@@ -127,9 +123,11 @@ async function loadTownEventsForHome() {
         // キャッシュ取得失敗時は後続へ
     }
 
-    // 2. Firestore からの取得を優先
-    if (isFirebaseReady && db) {
-        try {
+    // 2. Firestore からの取得を優先 (遅延インポート)
+    try {
+        const { isFirebaseReady, db } = await import("./firebase-init.js");
+        if (isFirebaseReady && db) {
+            const { collection, getDocs } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
             const snap = await getDocs(collection(db, "events"));
             const events = [];
             snap.forEach((docSnap) => {
@@ -146,9 +144,9 @@ async function loadTownEventsForHome() {
             if (events.length > 0) {
                 return events.filter((e) => e.title && e.date);
             }
-        } catch (err) {
-            console.warn("[Home] Firestore 取得エラー:", err);
         }
+    } catch (err) {
+        console.warn("[Home] Firestore 取得スキップ:", err);
     }
 
     // 3. 取得できない場合は空配列
@@ -196,6 +194,7 @@ async function setupHomePage(config) {
         return;
     }
 
+    const { loadAllManagedEvents } = await import("./community-admin.js");
     const [managedEvents, townEvents] = await Promise.all([
         loadAllManagedEvents(config),
         loadTownEventsForHome()
@@ -237,24 +236,38 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (page === "events") {
-        runSafeInit(() => initCalendarPage(SITE_CONFIG));
-        runSafeInit(async () => initManagedEventsPage(SITE_CONFIG));
+        // カレンダー画面ではカレンダー初期化を最優先で即時起動
+        runSafeInit(async () => {
+            const { initCalendarPage } = await import("./calendar.js");
+            initCalendarPage(SITE_CONFIG);
+        });
+        runSafeInit(async () => {
+            const { initManagedEventsPage } = await import("./community-admin.js");
+            await initManagedEventsPage(SITE_CONFIG);
+        });
     }
 
     if (page === "documents") {
-        await runSafeInit(async () => initDocumentsPage(SITE_CONFIG));
+        await runSafeInit(async () => {
+            const { initDocumentsPage } = await import("./drive.js");
+            await initDocumentsPage(SITE_CONFIG);
+        });
     }
 
     if (page === "map") {
-        await runSafeInit(async () => initMapPage(SITE_CONFIG));
+        await runSafeInit(async () => {
+            const { initMapPage } = await import("./map.js");
+            await initMapPage(SITE_CONFIG);
+        });
     }
 
     if (page === "equipment") {
-        await runSafeInit(async () => initFormsPage(SITE_CONFIG));
-    }
-
-    if (page === "equipment") {
-        await runSafeInit(async () => initEquipmentPage(SITE_CONFIG));
+        await runSafeInit(async () => {
+            const { initFormsPage } = await import("./form.js");
+            const { initEquipmentPage } = await import("./equipment.js");
+            await initFormsPage(SITE_CONFIG);
+            await initEquipmentPage(SITE_CONFIG);
+        });
     }
 
     if (page === "disaster") {
@@ -262,18 +275,28 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (page === "gallery") {
-        await runSafeInit(async () => initGalleryPage(SITE_CONFIG));
+        await runSafeInit(async () => {
+            const { initGalleryPage } = await import("./gallery.js");
+            await initGalleryPage(SITE_CONFIG);
+        });
     }
 
     if (page === "opinion") {
-        await runSafeInit(async () => initOpinionExchangePage(SITE_CONFIG));
+        await runSafeInit(async () => {
+            const { initOpinionExchangePage } = await import("./opinion-exchange.js");
+            await initOpinionExchangePage(SITE_CONFIG);
+        });
     }
 
     if (page === "admin") {
-        const adminConfig = SITE_CONFIG || {};
-        await runSafeInit(async () => initAdminCommunityForms(adminConfig));
-        await runSafeInit(async () => initAdminReturnAlerts(adminConfig));
-        await runSafeInit(async () => initManagedEventsPage(adminConfig));
-        await runSafeInit(async () => initAdminOpinionExchange(adminConfig));
+        await runSafeInit(async () => {
+            const { initAdminCommunityForms, initAdminReturnAlerts, initManagedEventsPage } = await import("./community-admin.js");
+            const { initAdminOpinionExchange } = await import("./opinion-exchange.js");
+            const adminConfig = SITE_CONFIG || {};
+            await initAdminCommunityForms(adminConfig);
+            await initAdminReturnAlerts(adminConfig);
+            await initManagedEventsPage(adminConfig);
+            await initAdminOpinionExchange(adminConfig);
+        });
     }
 });

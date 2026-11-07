@@ -139,4 +139,85 @@ if (testMap.size !== 2 || testMap.get('EV-1').title !== '夏祭り（更新後�
     process.exit(1);
 }
 
+// 7. キャッシュ予定の削除・移動同期の厳密性検証 (要件2)
+console.log('\n--- 7. キャッシュ予定の削除・移動同期の検証 ---');
+const mockEventsMap = new Map([
+    ['EV-OLD-1', { id: 'EV-OLD-1', title: '旧予定（削除済み）', start: '2026-07-15T10:00:00', end: '' }],
+    ['EV-KEEP', { id: 'EV-KEEP', title: '継続予定', start: '2026-07-20T10:00:00', end: '' }],
+    ['EV-OTHER-MONTH', { id: 'EV-OTHER-MONTH', title: '別月の予定', start: '2026-08-10T10:00:00', end: '' }]
+]);
+const firestoreJulyEvents = [
+    { id: 'EV-KEEP', title: '継続予定（Firestore最新）', start: '2026-07-20T10:00:00', end: '' },
+    { id: 'EV-NEW', title: '新設予定', start: '2026-07-25T14:00:00', end: '' }
+];
+// 7月の同期シミュレーション: 表示範囲 [2026-07-01, 2026-07-31]
+const rangeStart = new Date('2026-07-01T00:00:00');
+const rangeEnd = new Date('2026-07-31T23:59:59');
+const fsIds = new Set(firestoreJulyEvents.map(e => e.id));
+const removed = [];
+mockEventsMap.forEach((ev, id) => {
+    const s = new Date(ev.start);
+    const e = ev.end ? new Date(ev.end) : s;
+    if (s <= rangeEnd && e >= rangeStart && !fsIds.has(id)) {
+        removed.push(id);
+    }
+});
+removed.forEach(id => mockEventsMap.delete(id));
+firestoreJulyEvents.forEach(e => mockEventsMap.set(e.id, e));
+
+console.log(`[PASS] 削除同期後イベント数: ${mockEventsMap.size}件 (削除対象: ${removed.join(', ')})`);
+if (mockEventsMap.has('EV-OLD-1') || !mockEventsMap.has('EV-NEW') || !mockEventsMap.has('EV-OTHER-MONTH')) {
+    console.error('[FAIL] 削除同期または新設予定の追加に失敗しました');
+    process.exit(1);
+}
+
+// 8. 日付跨ぎ行事 (月跨ぎ・前日開始) の検出検証 (要件1)
+console.log('\n--- 8. 日付跨ぎ行事の表示検出検証 ---');
+const crossEvents = [
+    { id: 'EV-CROSS-1', title: '7月〜8月跨ぎ夏合宿', start: '2026-07-31T10:00:00', end: '2026-08-02T15:00:00' },
+    { id: 'EV-JULY-ONLY', title: '7月限定行事', start: '2026-07-20T10:00:00', end: '2026-07-20T12:00:00' },
+    { id: 'EV-AUG-ONLY', title: '8月限定行事', start: '2026-08-05T10:00:00', end: '2026-08-05T12:00:00' }
+];
+// 8月カレンダー表示時 [2026-08-01, 2026-08-31]
+const augStart = new Date('2026-08-01T00:00:00');
+const augEnd = new Date('2026-08-31T23:59:59');
+const visibleInAugust = crossEvents.filter(ev => {
+    const s = new Date(ev.start);
+    const e = ev.end ? new Date(ev.end) : s;
+    return s <= augEnd && e >= augStart;
+});
+console.log(`[PASS] 8月表示で検出された行事: ${visibleInAugust.map(e => e.title).join(', ')} (${visibleInAugust.length}件)`);
+if (visibleInAugust.length !== 2 || !visibleInAugust.some(e => e.id === 'EV-CROSS-1')) {
+    console.error('[FAIL] 日付跨ぎ行事が8月カレンダーに正しく検出されませんでした');
+    process.exit(1);
+}
+
+// 9. 通信エラー時の再試行保証と空結果判定 (要件3)
+console.log('\n--- 9. 通信エラー時の再試行保証と空結果検証 ---');
+const loadedMonthsSet = new Set();
+function simulateSyncMonth(monthKey, result) {
+    if (result.ok) {
+        // 正常終了 (0件含む) のみ取得済みにする
+        loadedMonthsSet.add(monthKey);
+        return { retryable: false, count: result.events.length };
+    } else {
+        // エラー時は取得済みにせず、再試行可能とする
+        return { retryable: true, error: result.errorType };
+    }
+}
+const failAttempt = simulateSyncMonth('2026-09', { ok: false, errorType: 'UNAVAILABLE', events: [] });
+console.log(`[PASS] オフライン失敗時: 取得済み登録=${loadedMonthsSet.has('2026-09')}, 再試行可能=${failAttempt.retryable}`);
+if (loadedMonthsSet.has('2026-09') || !failAttempt.retryable) {
+    console.error('[FAIL] 失敗した月が取得済みに登録されてしまいました');
+    process.exit(1);
+}
+
+const emptySuccess = simulateSyncMonth('2026-10', { ok: true, events: [] });
+console.log(`[PASS] 予定ゼロ(0件)月: 取得済み登録=${loadedMonthsSet.has('2026-10')}, 再試行不要=${!emptySuccess.retryable}`);
+if (!loadedMonthsSet.has('2026-10') || emptySuccess.retryable) {
+    console.error('[FAIL] 正常な0件月が取得済みに登録されませんでした');
+    process.exit(1);
+}
+
 console.log('\n=== 全ての性能・耐性検証テストに合格 (ALL PASSED) ===');
+

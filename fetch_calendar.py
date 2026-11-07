@@ -4,12 +4,25 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
 from hashlib import sha256
 from datetime import datetime, timezone
 from pathlib import Path
+
+# 個人情報サニタイズ用正規表現 (電話番号・メールアドレス)
+PHONE_REGEX = re.compile(r"(\d{2,4}-\d{2,4}-\d{4}|\b0\d{9,10}\b)")
+EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
+
+def sanitize_public_text(text: str) -> str:
+    """公開テキストから個人情報（電話番号・メールアドレス）をサニタイズする。"""
+    if not text:
+        return ""
+    sanitized = PHONE_REGEX.sub("[連絡先保護]", text)
+    sanitized = EMAIL_REGEX.sub("[メール保護]", sanitized)
+    return sanitized
 
 _raw_url = os.environ.get("GAS_WEB_APP_URL", "").strip()
 if not _raw_url:
@@ -100,13 +113,31 @@ def fetch_events_from_gas() -> list[dict]:
     print(f"[INFO] 企画イベント取得: {comm_url}")
     comm_events = fetch_json_from_url(comm_url)
 
+    # 要件6: 公開行事のみを抽出し、会員限定・未承認の行事や個人情報を排除する
+    ALLOWED_KEYS = {"id", "title", "start", "end", "place", "description", "category", "allDay"}
+
+    # 企画イベントの承認状態・公開性チェック
+    valid_comm_events = []
+    for item in comm_events:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "").lower()
+        if status and status not in ("approved", "published"):
+            print(f"[INFO] 未承認または下書きの企画イベントを除外しました: {item.get('title')}")
+            continue
+        is_public = item.get("isPublic")
+        if is_public is False or str(is_public).lower() in ("false", "0"):
+            print(f"[INFO] 非公開の企画イベントを除外しました: {item.get('title')}")
+            continue
+        valid_comm_events.append(item)
+
     combined: list[dict] = []
     seen_keys: set[str] = set()
 
-    for item in town_events + comm_events:
+    for item in town_events + valid_comm_events:
         if not isinstance(item, dict):
             continue
-        title = str(item.get("title") or item.get("summary") or "").strip()
+        title = sanitize_public_text(str(item.get("title") or item.get("summary") or "").strip())
         start = str(item.get("start") or item.get("startDate") or item.get("date") or "").strip()
         if not title or not start:
             continue
@@ -116,18 +147,22 @@ def fetch_events_from_gas() -> list[dict]:
             continue
         seen_keys.add(key)
 
-        combined.append({
+        # 許可リスト方式で公開属性のみを出力
+        event_obj = {
             "id": str(item.get("id") or item.get("eventId") or key),
             "title": title,
             "start": start,
             "end": str(item.get("end") or item.get("endDate") or "").strip(),
-            "place": str(item.get("place") or item.get("location") or "").strip(),
-            "description": str(item.get("description") or item.get("note") or "").strip(),
+            "place": sanitize_public_text(str(item.get("place") or item.get("location") or "").strip()),
+            "description": sanitize_public_text(str(item.get("description") or item.get("note") or "").strip()),
             "category": str(item.get("category") or "町内行事").strip(),
             "allDay": bool(item.get("allDay") or len(start) == 10),
-        })
+        }
+        # 許可リスト以外のキーが紛れ込まないよう厳格フィルタ
+        safe_obj = {k: v for k, v in event_obj.items() if k in ALLOWED_KEYS}
+        combined.append(safe_obj)
 
-    print(f"[INFO] 取得完了: 公式行事={len(town_events)}件, 企画イベント={len(comm_events)}件, 合計={len(combined)}件")
+    print(f"[INFO] 取得完了: 公式行事={len(town_events)}件, 企画イベント(承認済)={len(valid_comm_events)}件, 合計={len(combined)}件")
     return combined
 
 
