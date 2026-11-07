@@ -23,6 +23,7 @@
                     <li><a href="disaster.html" class="nav-link">防災情報</a></li>
                     <li><a href="documents.html" class="nav-link">回覧板・資料室</a></li>
                     <li><a href="gallery.html" class="nav-link">写真アルバム</a></li>
+                    <li><a href="opinion.html" class="nav-link">情報交換</a></li>
                     <li><a href="admin.html" class="nav-link">管理ページ</a></li>
                 </ul>
             </nav>
@@ -36,7 +37,14 @@
 
             <section class="card">
                 <h2>町内会カレンダー（カスタム表示）</h2>
-                <p id="calendar-connection-status" class="note">読み込み中です...</p>
+                <div class="calendar-filter-row" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+                    <button class="button filter-pill active" type="button" data-category="all" style="padding:6px 14px; font-size:0.9rem;">すべて</button>
+                    <button class="button filter-pill" type="button" data-category="町内行事" style="padding:6px 14px; font-size:0.9rem; background:#247246;">町内行事</button>
+                    <button class="button filter-pill" type="button" data-category="清掃" style="padding:6px 14px; font-size:0.9rem; background:#2980b9;">清掃・美化</button>
+                    <button class="button filter-pill" type="button" data-category="防災" style="padding:6px 14px; font-size:0.9rem; background:#c0392b;">防災・防犯</button>
+                    <button class="button filter-pill" type="button" data-category="コミニティ" style="padding:6px 14px; font-size:0.9rem; background:#e67e22;">コミニティ</button>
+                </div>
+                <p id="calendar-connection-status" class="note" aria-live="polite">読み込み中です...</p>
                 <p class="note">町内会カレンダーへの予定追加は管理ページから管理者が登録します。</p>
                 <div class="calendar-shell">
                     <div id="custom-calendar"></div>

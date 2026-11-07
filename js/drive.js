@@ -1,26 +1,79 @@
 /**
- * Google Drive 連携モジュール
+ * 回覧板・資料室モジュール
  *
- * 将来は Drive API (files.list) でフォルダ内の PDF 一覧を取得します。
- * 現時点は config.js のモックデータを使用します。
- *
- * Drive API 連携時の置き換え先: getDriveCircular() / getDriveDocuments()
+ * - Cloud Firestore (documents) からの動的メタデータ取得
+ * - 年度別タブ切り替え & カテゴリ別分類 (回覧板 / 総会資料 / 会則 / 議事録 / 防災資料)
+ * - 会員限定資料のアクセス制御 (未ログイン時は閲覧リンクをブロック)
+ * - キーワード検索 (リアルタイム絞り込み)
+ * - フォールバック機能 (config.drive のモックデータ)
  */
 
-/** 回覧板（年別フォルダ）を返します。将来は Drive API へ置き換えます。 */
-export async function getDriveCircular(config) {
-    // TODO: 実装例
-    // const folderId = config.drive.circularFolderId;
-    // const res = await gapi.client.drive.files.list({ q: `'${folderId}' in parents`, ... });
-    return Promise.resolve(config?.drive?.mockCircular ?? {});
+import { db, isFirebaseReady, auth } from "./firebase-init.js";
+import { collection, getDocs, query, orderBy } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+/**
+ * Firestore または config から全資料メタデータを取得
+ */
+export async function fetchAllDocuments(config) {
+    if (isFirebaseReady && db) {
+        try {
+            const docsRef = collection(db, "documents");
+            const q = query(docsRef, orderBy("date", "desc"));
+            const snap = await getDocs(q);
+            const list = [];
+            snap.forEach((docSnap) => {
+                const data = docSnap.data();
+                list.push({
+                    id: docSnap.id,
+                    title: data.title || "資料",
+                    category: data.category || "その他資料",
+                    year: String(data.year || (data.date ? data.date.slice(0, 4) : new Date().getFullYear())),
+                    date: data.date || "",
+                    url: data.fileUrl || data.url || "#",
+                    isRestricted: Boolean(data.isRestricted)
+                });
+            });
+            if (list.length > 0) return list;
+        } catch (err) {
+            console.warn("[Documents] Firestore 取得エラー (モックへフォールバック):", err);
+        }
+    }
+
+    // フォールバック: config.js のモックデータをフラット化
+    const circular = config?.drive?.mockCircular || {};
+    const other = config?.drive?.mockDocuments || {};
+    const list = [];
+
+    Object.entries(circular).forEach(([year, items]) => {
+        (items || []).forEach((item) => {
+            list.push({
+                title: item.title,
+                category: "回覧板",
+                year: String(year),
+                date: item.date || `${year}-01-01`,
+                url: item.url || "#",
+                isRestricted: false
+            });
+        });
+    });
+
+    Object.entries(other).forEach(([cat, items]) => {
+        (items || []).forEach((item) => {
+            list.push({
+                title: item.title,
+                category: cat,
+                year: "2026",
+                date: "2026-05-01",
+                url: item.url || "#",
+                isRestricted: cat.includes("議事録") || cat.includes("総会") // 議事録などは限定想定
+            });
+        });
+    });
+
+    return list;
 }
 
-/** その他資料を返します。将来は Drive API へ置き換えます。 */
-export async function getDriveDocuments(config) {
-    return Promise.resolve(config?.drive?.mockDocuments ?? {});
-}
-
-/** 年タブを生成します。 */
+/** 年タブを生成 */
 function createYearTabs(years, activeYear, onSelect) {
     const nav = document.createElement("nav");
     nav.className = "year-tabs";
@@ -30,7 +83,7 @@ function createYearTabs(years, activeYear, onSelect) {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "year-tab" + (year === activeYear ? " active" : "");
-        btn.textContent = year + "年";
+        btn.textContent = `${year}年度`;
         btn.setAttribute("aria-pressed", String(year === activeYear));
         btn.addEventListener("click", () => {
             nav.querySelectorAll(".year-tab").forEach((b) => {
@@ -45,8 +98,8 @@ function createYearTabs(years, activeYear, onSelect) {
     return nav;
 }
 
-/** PDF 一覧を container に描画します。 */
-function renderPdfList(container, items, fallbackUrl) {
+/** PDFリストの描画（アクセス制御対応） */
+function renderPdfList(container, items, isUserLoggedIn) {
     container.innerHTML = "";
 
     if (!items || items.length === 0) {
@@ -60,26 +113,57 @@ function renderPdfList(container, items, fallbackUrl) {
     items.forEach((item) => {
         const li = document.createElement("li");
         li.dataset.docTitle = (item.title || "").toLowerCase();
-        const link = document.createElement("a");
-        link.href = item.url || fallbackUrl || "#";
-        link.textContent = item.title;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        li.appendChild(link);
-        if (item.date) {
-            const dateSpan = document.createElement("span");
-            dateSpan.className = "note";
-            dateSpan.textContent = ` (${item.date})`;
-            li.appendChild(dateSpan);
+        li.style.display = "flex";
+        li.style.justifyContent = "space-between";
+        li.style.alignItems = "center";
+        li.style.padding = "8px 0";
+        li.style.borderBottom = "1px solid #eee";
+
+        const textSpan = document.createElement("span");
+
+        // 会員限定資料のアクセス制御
+        if (item.isRestricted && !isUserLoggedIn) {
+            textSpan.innerHTML = `📄 <strong>${item.title}</strong> <span class="note" style="color:#c0392b;">(🔒 会員限定・ログインが必要です)</span>`;
+            li.appendChild(textSpan);
+        } else {
+            const link = document.createElement("a");
+            link.href = item.url || "#";
+            link.textContent = `📄 ${item.title}`;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.style.fontWeight = "bold";
+            textSpan.appendChild(link);
+
+            if (item.date) {
+                const dateSpan = document.createElement("span");
+                dateSpan.className = "note";
+                dateSpan.textContent = ` (${item.date})`;
+                dateSpan.style.marginLeft = "8px";
+                textSpan.appendChild(dateSpan);
+            }
+            li.appendChild(textSpan);
+
+            if (item.url && item.url !== "#") {
+                const viewBtn = document.createElement("a");
+                viewBtn.href = item.url;
+                viewBtn.target = "_blank";
+                viewBtn.rel = "noopener noreferrer";
+                viewBtn.className = "button-link";
+                viewBtn.style.padding = "4px 10px";
+                viewBtn.style.fontSize = "0.85rem";
+                viewBtn.textContent = "開く";
+                li.appendChild(viewBtn);
+            }
         }
+
         list.appendChild(li);
     });
 
     container.appendChild(list);
 }
 
-/** 回覧板セクション（年タブ付き）を生成します。 */
-function buildCircularSection(circular, config) {
+/** 回覧板セクションの生成 */
+function buildCircularSection(circularItems, isUserLoggedIn) {
     const card = document.createElement("section");
     card.className = "card";
     card.dataset.source = "circular";
@@ -88,12 +172,16 @@ function buildCircularSection(circular, config) {
     h2.textContent = "📋 回覧板";
     card.appendChild(h2);
 
-    const years = Object.keys(circular).sort().reverse();
+    const yearGroups = {};
+    circularItems.forEach((item) => {
+        const y = item.year || "2026";
+        if (!yearGroups[y]) yearGroups[y] = [];
+        yearGroups[y].push(item);
+    });
+
+    const years = Object.keys(yearGroups).sort().reverse();
     if (years.length === 0) {
-        const note = document.createElement("p");
-        note.className = "note";
-        note.textContent = "資料は準備中です。";
-        card.appendChild(note);
+        card.innerHTML += "<p class='note'>現在、回覧板のデータはありません。</p>";
         return card;
     }
 
@@ -101,45 +189,41 @@ function buildCircularSection(circular, config) {
     pdfContainer.className = "pdf-list-container";
 
     const tabNav = createYearTabs(years, years[0], (year) => {
-        renderPdfList(pdfContainer, circular[year], config.drive.circularFolderUrl);
+        renderPdfList(pdfContainer, yearGroups[year], isUserLoggedIn);
     });
 
-    renderPdfList(pdfContainer, circular[years[0]], config.drive.circularFolderUrl);
+    renderPdfList(pdfContainer, yearGroups[years[0]], isUserLoggedIn);
     card.append(tabNav, pdfContainer);
     return card;
 }
 
-/** その他資料セクションを生成します。 */
-function buildOtherDocsSection(docs, fallbackUrl) {
+/** その他資料（総会資料、会則、議事録、防災資料）セクションの生成 */
+function buildOtherDocsSection(otherItems, isUserLoggedIn) {
     const card = document.createElement("section");
     card.className = "card";
     card.dataset.source = "other";
 
     const h2 = document.createElement("h2");
-    h2.textContent = "📁 その他資料";
+    h2.textContent = "📁 その他資料（総会資料・会則・議事録・防災）";
     card.appendChild(h2);
 
-    Object.entries(docs).forEach(([category, items]) => {
+    const byCat = {};
+    otherItems.forEach((item) => {
+        const cat = item.category || "一般資料";
+        if (!byCat[cat]) byCat[cat] = [];
+        byCat[cat].push(item);
+    });
+
+    Object.entries(byCat).forEach(([category, items]) => {
         const h3 = document.createElement("h3");
         h3.textContent = category;
-        h3.style.marginTop = "16px";
+        h3.style.marginTop = "18px";
+        h3.style.borderLeft = "4px solid #247246";
+        h3.style.paddingLeft = "8px";
 
-        const list = document.createElement("ul");
-        list.className = "simple-list";
-
-        items.forEach((item) => {
-            const li = document.createElement("li");
-            li.dataset.docTitle = (item.title || "").toLowerCase();
-            const link = document.createElement("a");
-            link.href = item.url || fallbackUrl || "#";
-            link.textContent = item.title;
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
-            li.appendChild(link);
-            list.appendChild(li);
-        });
-
-        card.append(h3, list);
+        const container = document.createElement("div");
+        renderPdfList(container, items, isUserLoggedIn);
+        card.append(h3, container);
     });
 
     return card;
@@ -170,16 +254,12 @@ function bindDocumentsFilters(root) {
             card.querySelectorAll("li[data-doc-title]").forEach((li) => {
                 const match = keyword === "" || (li.dataset.docTitle || "").includes(keyword);
                 li.classList.toggle("hidden", !match);
-                if (match) {
-                    itemCount += 1;
-                }
+                if (match) itemCount++;
             });
 
             const visible = itemCount > 0 || card.querySelectorAll("li[data-doc-title]").length === 0;
             card.classList.toggle("hidden", !visible);
-            if (visible) {
-                visibleCards += 1;
-            }
+            if (visible) visibleCards++;
             visibleItems += itemCount;
         });
 
@@ -191,23 +271,25 @@ function bindDocumentsFilters(root) {
 
     sourceFilter?.addEventListener("change", applyFilters);
     searchInput?.addEventListener("input", applyFilters);
-    applyFilters();
 }
 
-/** 資料室ページを初期化します。 */
-export async function initDocumentsPage(config) {
+/** 資料室ページの初期化 */
+export async function initDocumentsPage(config = {}) {
     const root = document.getElementById("documents-root");
     if (!root) return;
 
-    const [circular, otherDocs] = await Promise.all([
-        getDriveCircular(config),
-        getDriveDocuments(config)
-    ]);
+    root.innerHTML = "<p class='note'>資料一覧を読み込み中です...</p>";
 
-    root.appendChild(buildCircularSection(circular, config));
+    const isUserLoggedIn = Boolean(auth?.currentUser);
+    const allDocs = await fetchAllDocuments(config);
 
-    if (Object.keys(otherDocs).length > 0) {
-        root.appendChild(buildOtherDocsSection(otherDocs, config.drive.circularFolderUrl));
+    const circularItems = allDocs.filter((d) => d.category === "回覧板");
+    const otherItems = allDocs.filter((d) => d.category !== "回覧板");
+
+    root.innerHTML = "";
+    root.appendChild(buildCircularSection(circularItems, isUserLoggedIn));
+    if (otherItems.length > 0) {
+        root.appendChild(buildOtherDocsSection(otherItems, isUserLoggedIn));
     }
 
     bindDocumentsFilters(root);

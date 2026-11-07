@@ -160,4 +160,64 @@ export function initMapPage(config) {
     categoryFilter?.addEventListener("change", applyFilters);
     searchInput?.addEventListener("input", applyFilters);
     applyFilters();
+
+    renderWalkingCourses("walking-courses");
+}
+
+const WALKING_COURSES = [
+    {
+        id: "course-1",
+        title: "🌸 ふれあい公園・平坦ルート",
+        distance: "約 1.2 km",
+        time: "約 20 分",
+        badge: "車椅子・ベビーカー推奨",
+        description: "若松集会所から若松中央公園をのんびり往復する平坦で安全な歩道ルートです。休憩ベンチや多目的トイレもあります。",
+        highlights: ["集会所", "若松中央公園", "ふれあい花壇"]
+    },
+    {
+        id: "course-2",
+        title: "🌿 歴史と緑の健康散策コース",
+        distance: "約 2.5 km",
+        time: "約 40 分",
+        badge: "適度な運動・木陰あり",
+        description: "町内の鎮守の杜や並木道をめぐるウォーキングコース。春は桜、秋は紅葉が楽しめます。",
+        highlights: ["若松神社", "緑道並木", "中央公園（給水スポット）"]
+    },
+    {
+        id: "course-3",
+        title: "🛡️ 安心・防災確認ルート",
+        distance: "約 1.8 km",
+        time: "約 30 分",
+        badge: "家族で歩く避難路",
+        description: "一時避難場所やAED設置場所、防災倉庫を確認しながら歩ける防災学習コースです。",
+        highlights: ["AED（集会所内）", "防災倉庫", "若松小学校（第1避難所）"]
+    }
+];
+
+function renderWalkingCourses(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    container.innerHTML = "";
+    WALKING_COURSES.forEach((course) => {
+        const card = document.createElement("article");
+        card.className = "card sub-card walking-card";
+        card.style.border = "1px solid #e0ded8";
+        card.style.background = "#fff";
+        card.style.padding = "14px";
+        card.style.borderRadius = "8px";
+
+        card.innerHTML = `
+            <span class="status-badge" style="background:#eaf2ec;color:#247246;font-size:0.8rem;padding:3px 8px;border-radius:4px;font-weight:bold;">${course.badge}</span>
+            <h3 style="margin:8px 0 6px;color:#2c3e50;">${course.title}</h3>
+            <p style="margin:0 0 8px;font-weight:bold;color:#555;">
+                📏 距離: ${course.distance} ｜ ⏱️ 所要目安: ${course.time}
+            </p>
+            <p style="margin:0 0 10px;font-size:0.95rem;line-height:1.5;">${course.description}</p>
+            <div style="font-size:0.85rem;color:#777;">
+                <strong>📍 主な見どころ・目印:</strong> ${course.highlights.join(" → ")}
+            </div>
+        `;
+        container.appendChild(card);
+    });
 }
