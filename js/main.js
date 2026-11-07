@@ -113,7 +113,21 @@ function normalizeTownEventForHome(event) {
 }
 
 async function loadTownEventsForHome() {
-    // 1. Firestore からの取得を優先
+    // 1. 高速静的キャッシュ (Docs/events.json) からの即時読み込み (SWR)
+    try {
+        const res = await fetch("Docs/events.json", { cache: "no-cache" });
+        if (res.ok) {
+            const data = await res.json();
+            const list = Array.isArray(data) ? data : (Array.isArray(data?.events) ? data.events : []);
+            if (list.length > 0) {
+                return list.map(normalizeTownEventForHome).filter((event) => event.title && event.date);
+            }
+        }
+    } catch {
+        // キャッシュ取得失敗時は後続へ
+    }
+
+    // 2. Firestore からの取得を優先
     if (isFirebaseReady && db) {
         try {
             const snap = await getDocs(collection(db, "events"));
@@ -133,19 +147,12 @@ async function loadTownEventsForHome() {
                 return events.filter((e) => e.title && e.date);
             }
         } catch (err) {
-            console.warn("[Home] Firestore 取得エラー (GASへフォールバック):", err);
+            console.warn("[Home] Firestore 取得エラー:", err);
         }
     }
 
-    // 2. GAS フォールバック
-    try {
-        const response = await gasGet({ action: "getTownEvents" });
-        const rows = Array.isArray(response?.data) ? response.data : [];
-        return rows.map(normalizeTownEventForHome).filter((event) => event.title && event.date);
-    } catch (error) {
-        console.error("Failed to load town events from GAS:", error);
-        return [];
-    }
+    // 3. 取得できない場合は空配列
+    return [];
 }
 
 function renderHomeMonthlyEvents(statusEl, listEl, events) {
@@ -230,8 +237,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (page === "events") {
-        await runSafeInit(async () => initCalendarPage(SITE_CONFIG));
-        await runSafeInit(async () => initManagedEventsPage(SITE_CONFIG));
+        runSafeInit(() => initCalendarPage(SITE_CONFIG));
+        runSafeInit(async () => initManagedEventsPage(SITE_CONFIG));
     }
 
     if (page === "documents") {

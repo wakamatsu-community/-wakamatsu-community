@@ -1,5 +1,5 @@
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
-import { auth, isFirebaseReady, signInWithEmailAndPassword, getCurrentUserProfile } from "./firebase-init.js";
+import { auth, db, isFirebaseReady, signInWithEmailAndPassword, getCurrentUserProfile } from "./firebase-init.js";
 
 const EVENTS_STORE_KEY = "wakamatsu_managed_events_v1";
 
@@ -194,18 +194,56 @@ function normalizeManagedEventsFromGas(payload) {
 }
 
 async function loadManagedEvents(config) {
-    try {
-        const payload = await gasGet({ action: "getEvents" });
-        const parsedFromGas = normalizeManagedEventsFromGas(payload);
-        if (parsedFromGas.length > 0) {
-            saveLocalEvents(parsedFromGas);
-            return parsedFromGas;
+    // 1. 高速ローカルキャッシュを先行返却 (SWR)
+    const localEvents = loadLocalEvents(config);
+
+    // 2. Firestore が利用可能なら非同期で最新データを照会
+    if (isFirebaseReady && db) {
+        try {
+            const { collection, getDocs, query, where } = await import(
+                "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"
+            );
+            const commRef = collection(db, "communityEvents");
+            const snap = await getDocs(query(commRef, where("status", "==", "approved")));
+            const fbEvents = [];
+            snap.forEach((docSnap) => {
+                const d = docSnap.data();
+                const startStr = d.start && typeof d.start.toDate === "function" ? d.start.toDate().toISOString() : String(d.start || "");
+                const endStr = d.end && typeof d.end.toDate === "function" ? d.end.toDate().toISOString() : String(d.end || "");
+                fbEvents.push({
+                    id: docSnap.id,
+                    type: "special",
+                    title: d.title || "",
+                    category: d.category || "コミニティ",
+                    scheduleLabel: startStr ? `${startStr.slice(0, 10)} ${startStr.slice(11, 16)}` : "日時未設定",
+                    place: d.place || "",
+                    description: d.description || "",
+                    minParticipants: Number(d.minParticipants || 1),
+                    maxParticipants: Number(d.maxParticipants || 10),
+                    currentCount: Number(d.currentCount || 0),
+                    entryEnabled: true,
+                    deadline: "",
+                    status: "open",
+                    start: startStr,
+                    end: endStr,
+                    recruitFormUrl: ""
+                });
+            });
+
+            if (fbEvents.length > 0) {
+                saveLocalEvents(fbEvents);
+                return fbEvents;
+            }
+        } catch (fbErr) {
+            console.warn("[CommunityAdmin] Firestore 照会スキップ:", fbErr);
         }
-    } catch (error) {
-        console.error("Failed to load managed events from GAS:", error);
-        return loadLocalEvents(config);
     }
 
+    if (localEvents.length > 0) {
+        return localEvents;
+    }
+
+    // 3. キャッシュも Firestore も空の場合のみフォールバック
     return [];
 }
 

@@ -70,29 +70,65 @@ def load_existing_snapshot() -> dict | None:
     return existing
 
 
-def fetch_events_from_gas() -> list[dict]:
-    url = GAS_WEB_APP_URL.rstrip("/") + "?action=getEvents"
-    print(f"[INFO] アクセスURL: {url}")
-
+def fetch_json_from_url(url: str) -> list[dict]:
     try:
         with urllib.request.urlopen(url, timeout=20) as response:
             body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        print(f"[ERROR] HTTPエラー {exc.code}: {url}", file=sys.stderr)
-        raise
     except Exception as exc:
-        print(f"[ERROR] 接続失敗 ({url}): {exc}", file=sys.stderr)
-        raise
+        print(f"[WARN] 取得失敗 ({url}): {exc}", file=sys.stderr)
+        return []
 
     payload = json.loads(body)
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
-        if isinstance(payload.get("events"), list):
-            return payload["events"]
         if isinstance(payload.get("data"), list):
             return payload["data"]
+        if isinstance(payload.get("events"), list):
+            return payload["events"]
     return []
+
+
+def fetch_events_from_gas() -> list[dict]:
+    # 1. 町内会公式行事 (getTownEvents)
+    town_url = GAS_WEB_APP_URL.rstrip("/") + "?action=getTownEvents"
+    print(f"[INFO] 公式行事取得: {town_url}")
+    town_events = fetch_json_from_url(town_url)
+
+    # 2. 会員企画・追加イベント (getEvents)
+    comm_url = GAS_WEB_APP_URL.rstrip("/") + "?action=getEvents"
+    print(f"[INFO] 企画イベント取得: {comm_url}")
+    comm_events = fetch_json_from_url(comm_url)
+
+    combined: list[dict] = []
+    seen_keys: set[str] = set()
+
+    for item in town_events + comm_events:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("summary") or "").strip()
+        start = str(item.get("start") or item.get("startDate") or item.get("date") or "").strip()
+        if not title or not start:
+            continue
+
+        key = f"{title}_{start[:10]}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        combined.append({
+            "id": str(item.get("id") or item.get("eventId") or key),
+            "title": title,
+            "start": start,
+            "end": str(item.get("end") or item.get("endDate") or "").strip(),
+            "place": str(item.get("place") or item.get("location") or "").strip(),
+            "description": str(item.get("description") or item.get("note") or "").strip(),
+            "category": str(item.get("category") or "町内行事").strip(),
+            "allDay": bool(item.get("allDay") or len(start) == 10),
+        })
+
+    print(f"[INFO] 取得完了: 公式行事={len(town_events)}件, 企画イベント={len(comm_events)}件, 合計={len(combined)}件")
+    return combined
 
 
 def save_events(events: list[dict]) -> None:
