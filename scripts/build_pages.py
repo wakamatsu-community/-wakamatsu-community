@@ -79,6 +79,14 @@ def should_ignore(path: Path) -> bool:
     return False
 
 
+def safe_copy(src: Path, dst: Path) -> None:
+    try:
+        shutil.copy2(src, dst)
+    except Exception:
+        with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+
+
 def copy_workspace() -> None:
     if DIST.exists():
         shutil.rmtree(DIST)
@@ -93,10 +101,11 @@ def copy_workspace() -> None:
             shutil.copytree(
                 item,
                 target,
+                copy_function=safe_copy,
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
             )
         else:
-            shutil.copy2(item, target)
+            safe_copy(item, target)
 
 
 def inject_runtime_config() -> None:

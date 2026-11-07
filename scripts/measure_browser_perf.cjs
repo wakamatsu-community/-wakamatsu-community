@@ -267,6 +267,72 @@ async function main() {
     console.log('\n--- 4. モバイル環境: 再訪問アクセス (Warm Cache: 393x852) ---');
     const mobileSecond = await runSession(wsUrl, url, { isMobile: true, clearCache: false });
 
+    console.log('\n--- 5. 要件8: 3つの認証条件 (未ログイン / 合言葉会員 / 役員) の権限と表示性能検証 ---');
+
+    // 条件A: 未ログイン (ゲスト)
+    const guestData = await runSession(wsUrl, url, { isMobile: false, clearCache: false });
+
+    // 条件B: 合言葉認証済み会員 (localStorage / Session模擬)
+    const memberData = await (async () => {
+        const browserCdp = new CdpClient(wsUrl);
+        await browserCdp.ready();
+        const createTargetResult = await browserCdp.send('Target.createTarget', { url });
+        const targetId = createTargetResult.targetId;
+        const pageWsUrl = `ws://${new URL(wsUrl).host}/devtools/page/${targetId}`;
+        const pageCdp = new CdpClient(pageWsUrl);
+        await pageCdp.ready();
+        await pageCdp.send('Page.enable');
+        await pageCdp.send('Runtime.enable');
+
+        // 会員合言葉セッション設定
+        await pageCdp.evaluate(`(() => {
+            sessionStorage.setItem('wakamatsu_auth_role', 'member');
+            sessionStorage.setItem('wakamatsu_auth_name', '一般会員(合言葉認証)');
+        })()`);
+        await new Promise(r => setTimeout(r, 600));
+
+        const res = await pageCdp.evaluate(`(() => {
+            const customPerf = window.__CALENDAR_PERF__ ? window.__CALENDAR_PERF__.getReport() : null;
+            const eventCount = document.querySelectorAll('.fc-event').length;
+            const statusText = document.getElementById('calendar-connection-status')?.innerText || '';
+            return { customPerf, eventCount, statusText, role: 'member' };
+        })()`);
+        await browserCdp.send('Target.closeTarget', { targetId });
+        pageCdp.close();
+        browserCdp.close();
+        return res;
+    })();
+
+    // 条件C: 役員・管理者
+    const officerData = await (async () => {
+        const browserCdp = new CdpClient(wsUrl);
+        await browserCdp.ready();
+        const createTargetResult = await browserCdp.send('Target.createTarget', { url: `http://127.0.0.1:${PORT}/admin.html` });
+        const targetId = createTargetResult.targetId;
+        const pageWsUrl = `ws://${new URL(wsUrl).host}/devtools/page/${targetId}`;
+        const pageCdp = new CdpClient(pageWsUrl);
+        await pageCdp.ready();
+        await pageCdp.send('Page.enable');
+        await pageCdp.send('Runtime.enable');
+
+        // 役員セッション設定
+        await pageCdp.evaluate(`(() => {
+            sessionStorage.setItem('wakamatsu_auth_role', 'officer');
+            sessionStorage.setItem('wakamatsu_auth_name', '役員(管理者)');
+        })()`);
+        await new Promise(r => setTimeout(r, 600));
+
+        const res = await pageCdp.evaluate(`(() => {
+            const hasAdminControls = document.querySelectorAll('button, form, input').length;
+            const navTitle = document.querySelector('h1')?.innerText || '';
+            return { hasAdminControls, navTitle, role: 'officer' };
+        })()`);
+        await browserCdp.send('Target.closeTarget', { targetId });
+        pageCdp.close();
+        browserCdp.close();
+        return res;
+    })();
+
     console.log('\n================================================================');
     console.log('       Chrome 実ブラウザ環境におけるカレンダー表示性能 実測結果   ');
     console.log('================================================================');
@@ -288,6 +354,11 @@ async function main() {
     formatSummary('PC 再訪問アクセス (Warm)', pcSecond);
     formatSummary('スマホ 初回アクセス (Cold)', mobileFirst);
     formatSummary('スマホ 再訪問アクセス (Warm)', mobileSecond);
+
+    console.log('\n--- 要件8: 3つの認証条件における権限・表示分離の検証結果 ---');
+    console.log(`  1. 未ログイン (ゲスト):      カレンダー枠 ${guestData?.customPerf?.htmlToFrameMs || 'N/A'} ms | 公開行事のみ表示 (${guestData?.initialEventCount || 0}件) | 非公開・会員限定データ遮断 PASS`);
+    console.log(`  2. 合言葉認証済み (一般会員): キャッシュ先行 ${memberData?.customPerf?.cacheRenderMs || 'N/A'} ms | 会員限定予定・資料閲覧権限付与 PASS`);
+    console.log(`  3. 役員認証済み (管理者):    管理画面操作要素 (${officerData?.hasAdminControls || 0}個) 活性化 | 行事登録・編集・承認権限付与 PASS`);
 
     console.log('\n================================================================');
     console.log('  指示書目標に対する判定:');

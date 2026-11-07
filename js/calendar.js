@@ -372,6 +372,42 @@ async function fetchEventsFromFirestoreRange(activeStartStr, activeEndStr) {
 
         const fetchedEvents = [];
 
+        // 要件1 & 2: 日本語フィールドと英語フィールドの自動照合およびstatus未設定保護
+        const extractFirestoreEventData = (data) => {
+            if (!data) return null;
+            const title = String(data.title || data["タイトル"] || data["件名"] || "").trim();
+
+            const rawStart = data.start ?? data["開始日時"] ?? data["開始"] ?? data["日時"] ?? null;
+            const rawEnd = data.end ?? data["終了日時"] ?? data["終了"] ?? null;
+
+            const startStr = rawStart && typeof rawStart.toDate === "function"
+                ? rawStart.toDate().toISOString()
+                : (rawStart ? String(rawStart) : "");
+            const endStr = rawEnd && typeof rawEnd.toDate === "function"
+                ? rawEnd.toDate().toISOString()
+                : (rawEnd ? String(rawEnd) : "");
+
+            const place = String(data.place || data["場所"] || data["開催場所"] || data["会場"] || "").trim();
+            const description = String(data.description || data["説明"] || data["詳細"] || data["内容"] || "").trim();
+            const category = String(data.category || data["カテゴリ"] || data["種別"] || "町内行事").trim();
+            const isAllDay = Boolean(data.isAllDay ?? data.allDay ?? data["終日"] ?? data["終日予定"] ?? false);
+            const status = String(data.status || data["状態"] || data["ステータス"] || "").trim().toLowerCase();
+            const isRestricted = Boolean(data.isRestricted ?? data["会員限定"] ?? false);
+
+            return {
+                title,
+                start: startStr,
+                end: endStr,
+                place,
+                description,
+                category,
+                allDay: isAllDay,
+                status,
+                isRestricted,
+                organizer: data.organizerName || data.organizer || data["主催"] || data["企画者"] || ""
+            };
+        };
+
         // 日付跨ぎ・表示期間交差 (overlap) 判定ヘルパー
         // 行事の開始日 <= 表示終了日 かつ 行事の終了日 >= 表示開始日
         const isEventInActiveRange = (evStartStr, evEndStr) => {
@@ -381,40 +417,50 @@ async function fetchEventsFromFirestoreRange(activeStartStr, activeEndStr) {
             return evStart <= activeEndDate && evEnd >= activeStartDate;
         };
 
-        // 公式行事のパース
+        // 公式行事のパース (要件2: status が明示的に published のもののみ採用)
         eventsSnap.forEach((docSnap) => {
-            const d = docSnap.data();
-            const startStr = d.start && typeof d.start.toDate === "function" ? d.start.toDate().toISOString() : String(d.start || "");
-            const endStr = d.end && typeof d.end.toDate === "function" ? d.end.toDate().toISOString() : String(d.end || "");
-            if (startStr && isEventInActiveRange(startStr, endStr)) {
+            const item = extractFirestoreEventData(docSnap.data());
+            if (!item || !item.title || !item.start) return;
+
+            if (item.status !== "published") {
+                console.info(`[Calendar] 未公開またはステータス未設定の行事を除外保護: ${item.title} (status=${item.status || "未設定"})`);
+                return;
+            }
+
+            if (isEventInActiveRange(item.start, item.end)) {
                 fetchedEvents.push(normalizeEventForCalendar({
                     id: docSnap.id,
-                    title: d.title,
-                    start: startStr,
-                    end: endStr,
-                    place: d.place,
-                    description: d.description,
-                    category: d.category || "町内行事",
-                    allDay: d.isAllDay
+                    title: item.title,
+                    start: item.start,
+                    end: item.end,
+                    place: item.place,
+                    description: item.description,
+                    category: item.category,
+                    allDay: item.allDay,
+                    isRestricted: item.isRestricted
                 }, "firestore"));
             }
         });
 
-        // 企画イベントのパース
+        // 企画イベントのパース (要件2: status が明示的に approved のもののみ採用)
         commSnap.forEach((docSnap) => {
-            const d = docSnap.data();
-            const startStr = d.start && typeof d.start.toDate === "function" ? d.start.toDate().toISOString() : String(d.start || "");
-            const endStr = d.end && typeof d.end.toDate === "function" ? d.end.toDate().toISOString() : String(d.end || "");
-            if (startStr && isEventInActiveRange(startStr, endStr)) {
+            const item = extractFirestoreEventData(docSnap.data());
+            if (!item || !item.title || !item.start) return;
+
+            if (item.status !== "approved") {
+                return;
+            }
+
+            if (isEventInActiveRange(item.start, item.end)) {
                 fetchedEvents.push(normalizeEventForCalendar({
                     id: docSnap.id,
-                    title: d.title,
-                    start: startStr,
-                    end: endStr,
-                    place: d.place,
-                    description: d.description,
-                    category: d.category || "コミニティ",
-                    organizer: d.organizerName
+                    title: item.title,
+                    start: item.start,
+                    end: item.end,
+                    place: item.place,
+                    description: item.description,
+                    category: item.category || "コミニティ",
+                    organizer: item.organizer
                 }, "community"));
             }
         });

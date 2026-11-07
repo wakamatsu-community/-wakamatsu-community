@@ -1,0 +1,110 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 役員（管理者）判定ヘルパー
+    function isOfficer() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'officer';
+    }
+
+    // 会員（ログイン済み/合言葉認証済み）判定ヘルパー
+    function isMember() {
+      return request.auth != null;
+    }
+
+    // 本人判定ヘルパー
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    // 1. 町内会公式行事 (events)
+    // - status が 'published' かつ 非公開フラグがないものは住民全員が閲覧可能
+    // - 会員限定行事 (isRestricted == true) またはステータス未設定/下書きは会員・役員のみ閲覧可能
+    // - 作成・変更・削除は役員のみ許可 (最小権限)
+    match /events/{eventId} {
+      allow read: if (resource.data.status == 'published' && resource.data.isRestricted != true)
+                  || isMember()
+                  || isOfficer();
+      allow write: if isOfficer();
+    }
+
+    // 2. 会員企画イベント (communityEvents)
+    // - status が 'approved' かつ 非公開フラグがないものは閲覧可能
+    // - 承認待ち・却下された行事は企画者本人と役員のみ閲覧可能
+    // - 企画申請は会員のみ、承認・変更は役員
+    match /communityEvents/{eventId} {
+      allow read: if (resource.data.status == 'approved' && resource.data.isRestricted != true)
+                  || isOfficer()
+                  || (isMember() && resource.data.organizerUid == request.auth.uid);
+      allow create: if isMember() && request.resource.data.status == 'pending';
+      allow update: if isOfficer() || (isMember() && resource.data.organizerUid == request.auth.uid && resource.data.status == 'pending');
+      allow delete: if isOfficer();
+
+      // 参加者台帳 (entries) - 個人情報保護のため役員・本人・企画者のみ
+      match /entries/{entryId} {
+        allow read: if isOfficer()
+                    || isOwner(resource.data.uid)
+                    || (isMember() && get(/databases/$(database)/documents/communityEvents/$(eventId)).data.organizerUid == request.auth.uid);
+        allow create: if isMember() && isOwner(request.resource.data.uid);
+        allow update, delete: if isOfficer() || isOwner(resource.data.uid);
+      }
+    }
+
+    // 3. 既存企画検討データ (eventPlanning)
+    // - 整理移行用コレクション: 一般公開は一切禁止。役員と企画者のみ参照可能
+    match /eventPlanning/{docId} {
+      allow read, write: if isOfficer();
+    }
+
+    // 4. 回覧板・資料室 (documents)
+    // - 会員限定の町内会資料・会計報告・名簿等は未ログインの第三者へは非公開
+    match /documents/{docId} {
+      allow read: if (resource.data.isRestricted != true) || isMember();
+      allow write: if isOfficer();
+    }
+
+    // 5. 写真アルバム (photos)
+    // - 住民のプライバシー保護のため、承認済みかつ非公開でない写真のみ公開
+    // - 会員限定アルバムはログイン会員のみ
+    match /photos/{photoId} {
+      allow read: if (resource.data.status == 'approved' && resource.data.isRestricted != true)
+                  || isMember()
+                  || isOfficer();
+      allow create: if isMember() && request.resource.data.status == 'pending';
+      allow update, delete: if isOfficer();
+    }
+
+    // 6. 備品マスタ (equipmentMaster)
+    match /equipmentMaster/{equipmentId} {
+      allow read: if true;
+      allow write: if isOfficer();
+    }
+
+    // 7. 備品予約台帳 (equipmentReservations)
+    // - カレンダー上の貸出状況確認のため枠データは読み取り可
+    // - 予約申請は会員のみ、承認・変更・返納は役員または予約者本人
+    match /equipmentReservations/{reservationId} {
+      allow read: if true;
+      allow create: if isMember() && request.resource.data.userUid == request.auth.uid;
+      allow update: if isOfficer() || (isOwner(resource.data.userUid) && resource.data.status == 'requested');
+      allow delete: if isOfficer();
+    }
+
+    // 8. 意見交換・相談 (opinions)
+    match /opinions/{opinionId} {
+      allow read: if resource.data.isPublic == true || isOfficer() || (request.auth != null && resource.data.userUid == request.auth.uid);
+      allow create: if true;
+      allow update, delete: if isOfficer();
+    }
+
+    // 9. 会員プロファイル (users)
+    match /users/{userId} {
+      allow read: if isMember();
+      allow create: if isOwner(userId) && request.resource.data.role == 'member';
+      allow update: if isOfficer() || (isOwner(userId) && request.resource.data.role == resource.data.role);
+      allow delete: if isOfficer();
+    }
+  }
+}

@@ -107,6 +107,41 @@ export async function getCurrentUserProfile() {
     };
 }
 
+/**
+ * 要件5 & 6: 町内会共通合言葉によるサーバー側安全認証
+ * Spark無料プランの範囲内で、Firebase Auth (Email/Password) の共通会員アカウントを用い、
+ * サーバー側で合言葉を検証して正規の認証トークン (request.auth != null) を取得します。
+ * ブラウザ側の平文照合は行いません。
+ *
+ * @param {string} passcode 会員共通の合言葉
+ * @param {string} [customEmail] 会員共通アカウントのメールアドレス (任意)
+ */
+export async function signInWithMemberPasscode(passcode, customEmail = null) {
+    if (!firebaseAuth) {
+        return { ok: false, errorType: "UNCONFIGURED", message: "Firebase Authが初期化されていません。" };
+    }
+    const memberEmail = customEmail || RUNTIME_CONFIG.MEMBER_AUTH_EMAIL || "member@wakamatsu-cho.internal";
+    try {
+        const userCredential = await signInWithEmailAndPassword(firebaseAuth, memberEmail, passcode);
+        return {
+            ok: true,
+            user: userCredential.user,
+            role: "member"
+        };
+    } catch (err) {
+        const code = err.code || "";
+        let message = "合言葉が正しくありません。町内会報記載の合言葉を確認してください。";
+        if (code === "auth/user-not-found") {
+            message = "共通会員アカウントがFirebase Authenticationに未作成です。(Firebase Consoleで設定が必要です)";
+        }
+        return {
+            ok: false,
+            errorType: code || "AUTH_FAILED",
+            message
+        };
+    }
+}
+
 export {
     firebaseApp,
     firestoreDb as db,
