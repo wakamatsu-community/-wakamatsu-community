@@ -1,4 +1,5 @@
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
+import { auth, isFirebaseReady, signInWithEmailAndPassword, getCurrentUserProfile } from "./firebase-init.js";
 
 const EVENTS_STORE_KEY = "wakamatsu_managed_events_v1";
 
@@ -1190,10 +1191,37 @@ function bindAdminLogin() {
     form.addEventListener("submit", async (event) => {
         event.preventDefault();
         const fd = new FormData(form);
+        const userId = String(fd.get("userId") || "").trim();
+        const pin = String(fd.get("pin") || "").trim();
+
+        status.textContent = "ログイン認証中...";
+        status.style.color = "";
+
+        // 1. Firebase Authentication による認証を優先試行
+        if (isFirebaseReady && auth) {
+            try {
+                const email = userId.includes("@") ? userId : `${userId}@wakamatsu-community.local`;
+                const userCredential = await signInWithEmailAndPassword(auth, email, pin);
+                const profile = await getCurrentUserProfile();
+
+                if (profile && profile.role === "officer") {
+                    setAdminPanelsVisible(true);
+                    setStatusText(status, `Firebaseログイン成功（役員権限）: ${profile.name}`);
+                    if (currentRole) {
+                        currentRole.textContent = `ログイン中: ${profile.name}（役員）`;
+                    }
+                    return;
+                }
+            } catch (fbErr) {
+                console.warn("[AdminLogin] Firebase ログイン試行失敗、GASへフォールバック:", fbErr);
+            }
+        }
+
+        // 2. GAS Web App へのフォールバック認証
         const payload = {
             action: "login",
-            userId: String(fd.get("userId") || "").trim(),
-            pin: String(fd.get("pin") || "").trim()
+            userId,
+            pin
         };
 
         const result = await postToGas(payload);

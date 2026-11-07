@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // 福山市若松町内会 – Google Apps Script バックエンド
 // ============================================================
 
@@ -12,7 +12,8 @@ var GALLERY_ARCHIVE_FOLDER_ID = "18SHRujU2DtAe0Fdao_Lt6WWpCM53ICE3";
 var PHOTO_ARCHIVE_DAYS = 365;
 var INFORMATION_PHOTO_FOLDER_PATH = ["台帳関係", "情報写真"];
 var INFORMATION_PHOTO_CATEGORY = "情報写真";
-var API_BUILD = "2026-06-18-post-enabled";
+var API_BUILD = "2026-11-07-firebase-verified";
+var FIREBASE_PROJECT_ID = "wakamatu-hp";
 var JSON_CACHE_TTL_SECONDS = 1500;
 var EVENT_JSON_CACHE_KEYS = {
   schedule: "schedule_events_json",
@@ -140,12 +141,12 @@ function doGet(e) {
               "health","login","addOpinion","addTownEvent","updateTownEvent","deleteTownEvent",
               "addEvent","addRecurringEvent","joinEvent","registerEventEntry","createUserEvent",
               "reserveEquipment","uploadPhoto","createPhotoFolder","addPeople","addEquipmentMaster",
-              "uploadDocument"
+              "uploadDocument","deleteDriveFile"
             ]
           }
         });
       case "login":
-        return jsonResponse_({ ok: true, action: action, data: login_(e.parameter || {}) });
+        return jsonResponse_({ ok: false, error: "セキュリティのため、ログインはPOSTメソッドでのみ受け付けています。" });
       case "getOpinions":
         return jsonResponse_({ ok: true, action: action, data: getOpinions_() });
       case "getEvents":
@@ -227,8 +228,14 @@ function doPost(e) {
         return jsonResponse_({ ok: true, action: action, data: addPeople_(body) });
       case "addEquipmentMaster":
         return jsonResponse_({ ok: true, action: action, data: addEquipmentMaster_(body) });
+      case "verifyAuthToken":
+        return jsonResponse_({ ok: true, action: action, data: verifyFirebaseIdToken_(body.idToken) });
+      case "getSecureDocumentContent":
+        return jsonResponse_({ ok: true, action: action, data: getSecureDocumentContent_(body) });
       case "uploadDocument":
         return jsonResponse_({ ok: true, action: action, data: uploadDocument_(body) });
+      case "deleteDriveFile":
+        return jsonResponse_({ ok: true, action: action, data: deleteDriveFile_(body) });
       default:
         return jsonResponse_({
           ok: false,
@@ -238,7 +245,7 @@ function doPost(e) {
             "login","addOpinion","addTownEvent","updateTownEvent","deleteTownEvent",
             "addEvent","addRecurringEvent","joinEvent",
             "reserveEquipment","uploadPhoto","createPhotoFolder","addPeople","addEquipmentMaster",
-            "uploadDocument"
+            "uploadDocument","deleteDriveFile"
           ]
         });
     }
@@ -1039,8 +1046,14 @@ function reserveEquipment_(params) {
     var spreadsheet       = getLedgerSpreadsheet();
     var masters           = readSheetAsObjects_("備品台帳", spreadsheet);
     var reservations      = readSheetAsObjects_("備品予約", spreadsheet);
-    var equipmentCalendar = CalendarApp.getCalendarById(EQUIPMENT_CALENDAR_ID);
-    if (!equipmentCalendar) { throw new Error("備品予約用カレンダーが見つかりません。EQUIPMENT_CALENDAR_ID を確認してください。"); }
+    var equipmentCalendar = null;
+    try {
+      if (EQUIPMENT_CALENDAR_ID && !EQUIPMENT_CALENDAR_ID.includes("replace-with")) {
+        equipmentCalendar = CalendarApp.getCalendarById(EQUIPMENT_CALENDAR_ID);
+      }
+    } catch (calErr) {
+      Logger.log("備品カレンダー取得スキップ: " + calErr);
+    }
 
     for (var i = 0; i < normalizedItems.length; i++) {
       var item   = normalizedItems[i];
@@ -1065,14 +1078,22 @@ function reserveEquipment_(params) {
 
     var rowsToAppend = [];
     normalizedItems.forEach(function(item, index) {
-      var calendarEndDate = new Date(item.returnDate.getTime());
-      calendarEndDate.setDate(calendarEndDate.getDate() + 1);
-      var calEvent = equipmentCalendar.createAllDayEvent("備品貸出: " + item.equipment, item.loanDate, calendarEndDate);
+      var calId = "";
+      if (equipmentCalendar) {
+        try {
+          var calendarEndDate = new Date(item.returnDate.getTime());
+          calendarEndDate.setDate(calendarEndDate.getDate() + 1);
+          var calEvent = equipmentCalendar.createAllDayEvent("備品貸出: " + item.equipment, item.loanDate, calendarEndDate);
+          calId = String(calEvent.getId() || "");
+        } catch (e) {
+          Logger.log("カレンダー予定作成失敗（続行）: " + e);
+        }
+      }
       var applicantCell = applicant + (phone || group ? " / " + [phone, group].filter(Boolean).join(" / ") : "");
       // 予約ID, カレンダー予定ID, 備品名, 数量, 貸出日, 返納日, 申請者, ステータス
       rowsToAppend.push([
         "EQ-" + new Date().getTime() + "-" + (index + 1),
-        String(calEvent.getId() || ""),
+        calId,
         item.equipment, item.quantity,
         toDate_(item.loanDate), toDate_(item.returnDate),
         applicantCell, "予約確定"
@@ -1089,12 +1110,25 @@ function reserveEquipment_(params) {
 
 function uploadPhoto_(params) {
   try {
+    var idToken      = String(params.idToken || "").trim();
     var photoDataRaw = String(params.photoData || params.base64Data || "").trim();
     var fileName     = String(params.fileName  || "photo.jpg").trim();
     var uploader     = String(params.uploader  || params.uploaderName || params.authorName || "").trim();
     var comment      = String(params.comment   || params.description || "").trim();
     var album        = String(params.album     || params.category    || "").trim();
     var targetFolderId = String(params.folderId || album || resolveSharedPhotoFolderId_() || "").trim();
+    var isPrivate    = Boolean(params.isPrivate || params.isRestricted);
+
+    // 認証チェック: idToken が指定されている場合は必ず検証
+    if (idToken) {
+      var authResult = verifyFirebaseIdToken_(idToken);
+      if (!authResult.valid) {
+        throw new Error("認証エラー: 写真をアップロードする権限がありません (" + authResult.error + ")");
+      }
+      if (!uploader && authResult.email) {
+        uploader = authResult.email;
+      }
+    }
 
     if (!photoDataRaw) { throw new Error("photoData は必須です。"); }
     if (!targetFolderId) { throw new Error("folderId（保存先フォルダID）は必須です。"); }
@@ -1107,10 +1141,14 @@ function uploadPhoto_(params) {
 
     var folder = DriveApp.getFolderById(targetFolderId);
     var file   = folder.createFile(blob);
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+    // 非公開設定でない場合のみ一般リンク閲覧を許可
+    if (!isPrivate) {
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    }
 
     var fileId   = file.getId();
-    var imageUrl = "https://drive.google.com/uc?export=view&id=" + fileId;
+    var imageUrl = isPrivate ? "" : "https://drive.google.com/uc?export=view&id=" + fileId;
     var photoId  = "PH-" + new Date().getTime();
     var postedAt = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
     var albumForSheet = album || targetFolderId;
@@ -1134,8 +1172,10 @@ function uploadPhoto_(params) {
     return {
       success: true,
       message: "写真のアップロードが完了しました",
+      photoId: photoId,
       fileId: fileId,
-      folderId: targetFolderId
+      folderId: targetFolderId,
+      isPrivate: isPrivate
     };
   } catch (err) {
     return { success: false, error: String(err && err.message || err) };
@@ -1693,5 +1733,135 @@ function ensureColumnCount_(sheet, requiredColumns) {
   var currentColumns = sheet.getMaxColumns();
   if (currentColumns < requiredColumns) {
     sheet.insertColumnsAfter(currentColumns, requiredColumns - currentColumns);
+  }
+}
+
+// ============================================================
+// Firebase Auth トークン検証 & セキュアドキュメント配信
+// ============================================================
+
+/**
+ * Firebase IDトークンをGoogleの公開エンドポイントで安全に検証する
+ */
+function verifyFirebaseIdToken_(idToken) {
+  if (!idToken) {
+    return { valid: false, error: "IDトークンが指定されていません。" };
+  }
+  try {
+    var url = "https://oauth2.googleapis.com/tokeninfo?id_token=" + encodeURIComponent(idToken);
+    var response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    var status = response.getResponseCode();
+    if (status !== 200) {
+      return { valid: false, error: "無効または期限切れのトークンです (HTTP " + status + ")。" };
+    }
+    var info = JSON.parse(response.getContentText());
+    
+    // 対象プロジェクトおよび発行元の検証
+    var expectedIssuer = "https://securetoken.google.com/" + FIREBASE_PROJECT_ID;
+    if (info.aud !== FIREBASE_PROJECT_ID && info.app_id !== FIREBASE_PROJECT_ID) {
+      return { valid: false, error: "対象プロジェクトが一致しません。" };
+    }
+    if (info.iss && info.iss !== expectedIssuer) {
+      return { valid: false, error: "トークン発行元が一致しません。" };
+    }
+    
+    // 有効期限チェック (UNIX秒)
+    var nowSec = Math.floor(new Date().getTime() / 1000);
+    if (info.exp && Number(info.exp) < nowSec) {
+      return { valid: false, error: "トークンの有効期限が切れています。" };
+    }
+    
+    return {
+      valid: true,
+      uid: info.sub || info.user_id,
+      email: info.email || "",
+      expiresAt: info.exp
+    };
+  } catch (err) {
+    return { valid: false, error: "トークン検証処理で例外が発生しました: " + String(err.message || err) };
+  }
+}
+
+/**
+ * 会員限定資料の安全な配信（認証トークン検証後にBase64で返却）
+ */
+function getSecureDocumentContent_(params) {
+  var idToken = params.idToken;
+  var fileId = params.driveFileId;
+  
+  if (!idToken || !fileId) {
+    throw new Error("idToken および driveFileId は必須です。");
+  }
+
+  // 1. サーバー側トークン検証
+  var authResult = verifyFirebaseIdToken_(idToken);
+  if (!authResult.valid) {
+    throw new Error("アクセス権限がありません: " + authResult.error);
+  }
+
+  // 2. Drive からファイル取得
+  var file = DriveApp.getFileById(fileId);
+  var blob = file.getBlob();
+  var base64 = Utilities.base64Encode(blob.getBytes());
+
+  return {
+    success: true,
+    fileName: file.getName(),
+    mimeType: blob.getContentType(),
+    data: base64
+  };
+}
+
+/**
+ * Google Drive 上のファイル削除（ゴミ箱移動）とメタデータ更新
+ */
+function deleteDriveFile_(params) {
+  try {
+    var fileId   = String(params.fileId || params.driveFileId || "").trim();
+    var idToken  = String(params.idToken || "").trim();
+    var fileType = String(params.fileType || "photo").trim();
+
+    if (!fileId) {
+      throw new Error("fileId は必須です。");
+    }
+
+    // 認証チェック
+    if (idToken) {
+      var authResult = verifyFirebaseIdToken_(idToken);
+      if (!authResult.valid) {
+        throw new Error("認証エラー: ファイルを削除する権限がありません (" + authResult.error + ")");
+      }
+    }
+
+    var file = DriveApp.getFileById(fileId);
+    file.setTrashed(true);
+
+    var sheetName = fileType === "document" ? "文書メタデータ" : "写真メタデータ";
+    var colIndex = 2; // B列: ドライブのファイルID
+    var statusCol = fileType === "document" ? 8 : 9; // 保管状態列
+
+    try {
+      var ss = getLedgerSpreadsheet();
+      var sheet = ss.getSheetByName(sheetName);
+      if (sheet) {
+        var data = sheet.getDataRange().getValues();
+        for (var i = 1; i < data.length; i++) {
+          if (String(data[i][colIndex - 1]) === fileId) {
+            sheet.getRange(i + 1, statusCol).setValue("削除済");
+            break;
+          }
+        }
+      }
+    } catch (sheetErr) {
+      console.warn("メタデータシートのステータス更新に失敗しました: " + sheetErr);
+    }
+
+    return {
+      success: true,
+      message: "ファイルを正常に削除（ゴミ箱へ移動）しました。",
+      fileId: fileId
+    };
+  } catch (err) {
+    return { success: false, error: String(err && err.message || err) };
   }
 }

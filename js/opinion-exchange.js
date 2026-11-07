@@ -1,39 +1,31 @@
+/**
+ * 若松町内会ホームページ 意見交換・地域相談モジュール
+ *
+ * - 会員・住民による意見・相談投稿 (全体公開 / 役員相談)
+ * - Cloud Firestore (opinions) による完全リアルタイム共有 (localStorage孤立の解消)
+ * - 管理者による返答・ステータス更新 (未確認 / 検討中 / 対応中 / 解消 / その他)
+ * - フォールバック機能 (GAS API)
+ */
+
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
+import { db, isFirebaseReady, auth } from "./firebase-init.js";
+import {
+    collection,
+    doc,
+    getDocs,
+    addDoc,
+    updateDoc,
+    query,
+    orderBy
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const OPINION_STORE_KEY = "wakamatsu_opinion_exchange_v1";
 const OPINION_STATUS_UNCONFIRMED = "未確認";
 const OPINION_STATUS_OPTIONS = ["検討中", "対応中", "解消", "その他"];
 
-const DEFAULT_OPINIONS = [
-    {
-        id: "OP-1001",
-        name: "",
-        category: "清掃・ごみ",
-        content: "○○の側溝にごみが放置されています。雨の前に確認できると助かります。",
-        answered: false,
-        status: OPINION_STATUS_UNCONFIRMED,
-        reason: "",
-        createdAt: "2026-06-10T09:00:00.000Z",
-        updatedAt: "2026-06-10T09:00:00.000Z"
-    },
-    {
-        id: "OP-1002",
-        name: "",
-        category: "落とし物・探し物",
-        content: "自治会館付近で鍵を探しています。お心当たりがあればご連絡ください。",
-        answered: true,
-        status: "対応中",
-        reason: "掲示板にも案内を出しています。",
-        createdAt: "2026-06-11T12:30:00.000Z",
-        updatedAt: "2026-06-11T12:30:00.000Z"
-    }
-];
-
 function normalizeOpinionStatus(value) {
     const raw = String(value || "").trim();
-    if (raw === "保留") {
-        return "その他";
-    }
+    if (raw === "保留") return "その他";
     if (raw === OPINION_STATUS_UNCONFIRMED || OPINION_STATUS_OPTIONS.includes(raw)) {
         return raw;
     }
@@ -46,7 +38,7 @@ function normalizeOpinion(opinion) {
         ...opinion,
         status,
         answered: Boolean(opinion?.answered),
-        reason: status === OPINION_STATUS_UNCONFIRMED ? "" : String(opinion?.reason || "").trim()
+        reason: status === OPINION_STATUS_UNCONFIRMED ? "" : String(opinion?.reason || opinion?.reply || "").trim()
     };
 }
 
@@ -55,16 +47,12 @@ function loadLocalOpinions() {
     if (saved) {
         try {
             const parsed = JSON.parse(saved);
-            const normalized = Array.isArray(parsed) ? parsed.map(normalizeOpinion) : [];
-            saveLocalOpinions(normalized);
-            return normalized;
+            return Array.isArray(parsed) ? parsed.map(normalizeOpinion) : [];
         } catch {
             localStorage.removeItem(OPINION_STORE_KEY);
         }
     }
-
-    localStorage.setItem(OPINION_STORE_KEY, JSON.stringify(DEFAULT_OPINIONS));
-    return [...DEFAULT_OPINIONS].map(normalizeOpinion);
+    return [];
 }
 
 function saveLocalOpinions(opinions) {
@@ -72,10 +60,9 @@ function saveLocalOpinions(opinions) {
 }
 
 function formatDate(value) {
+    if (!value) return "-";
     const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
-        return "-";
-    }
+    if (Number.isNaN(date.getTime())) return "-";
     const pad = (n) => String(n).padStart(2, "0");
     return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
@@ -91,345 +78,298 @@ function escapeHtml(value) {
 
 function getOpinionStatusText(opinion) {
     const status = normalizeOpinionStatus(opinion?.status);
-    const reason = String(opinion?.reason || "").trim();
+    const reason = String(opinion?.reason || opinion?.reply || "").trim();
     if (status !== OPINION_STATUS_UNCONFIRMED && reason) {
         return `${status} - ${reason}`;
     }
     return status;
 }
 
-function renderOpinionEntries(listEl, opinions) {
-    if (!listEl) {
-        return;
+/**
+ * 意見一覧の読み込み (Firestore優先)
+ */
+export async function fetchOpinions() {
+    if (isFirebaseReady && db) {
+        try {
+            const opinionsRef = collection(db, "opinions");
+            const q = query(opinionsRef, orderBy("createdAt", "desc"));
+            const snap = await getDocs(q);
+            const list = [];
+            snap.forEach((docSnap) => {
+                const data = docSnap.data();
+                const createdAtIso = data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : String(data.createdAt || "");
+                list.push(normalizeOpinion({
+                    id: docSnap.id,
+                    name: data.name || "匿名",
+                    category: data.category || "未分類",
+                    content: data.content || "",
+                    isPublic: data.isPublic !== false,
+                    status: data.status || "未確認",
+                    answered: Boolean(data.answered || data.reply),
+                    reason: data.reply || data.reason || "",
+                    createdAt: createdAtIso,
+                    updatedAt: createdAtIso
+                }));
+            });
+            if (list.length > 0) {
+                saveLocalOpinions(list);
+                return list;
+            }
+        } catch (err) {
+            console.warn("[Opinion] Firestore 取得エラー:", err);
+        }
     }
 
-    const recent = [...opinions]
-        .sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt))
-        .slice(0, 6);
+    // フォールバック: GAS
+    try {
+        const payload = await gasGet({ action: "getOpinions" });
+        const rows = Array.isArray(payload) ? payload : (Array.isArray(payload?.data) ? payload.data : []);
+        if (rows.length > 0) {
+            const list = rows.map((row, idx) => normalizeOpinion({
+                id: String(row?.["投稿ID"] || `OP-${Date.now()}-${idx}`),
+                name: String(row?.["名前"] || "").trim(),
+                category: String(row?.["カテゴリ"] || "").trim(),
+                content: String(row?.["内容"] || "").trim(),
+                answered: String(row?.["返信状態"] || "") !== "未対応",
+                status: String(row?.["管理ステータス"] || "未確認"),
+                reason: String(row?.["返信状態"] || "").trim(),
+                createdAt: String(row?.["日時"] || ""),
+                updatedAt: String(row?.["日時"] || "")
+            })).filter((item) => item.content);
+            saveLocalOpinions(list);
+            return list;
+        }
+    } catch {}
 
-    if (recent.length === 0) {
-        listEl.innerHTML = "<p class=\"note\">まだ投稿はありません。</p>";
+    return loadLocalOpinions();
+}
+
+/**
+ * 意見カードの描画 (一般住民用)
+ */
+function renderOpinionEntries(listEl, opinions) {
+    if (!listEl) return;
+
+    // 全体公開のもののみ表示
+    const publicOpinions = opinions.filter((o) => o.isPublic !== false);
+
+    if (publicOpinions.length === 0) {
+        listEl.innerHTML = "<p class=\"note\">現在、公開されている投稿はありません。</p>";
         return;
     }
 
     listEl.innerHTML = "";
-    recent.forEach((opinion) => {
+    publicOpinions.forEach((opinion) => {
         const card = document.createElement("article");
         card.className = "card opinion-entry-card";
         const currentStatus = normalizeOpinionStatus(opinion.status);
         card.innerHTML = `
-            <div class="opinion-entry-meta">
-                <span class="status-badge" data-status="${escapeHtml(currentStatus)}">${escapeHtml(currentStatus)}</span>
+            <div class="opinion-entry-meta" style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+                <span class="status-badge" data-status="${escapeHtml(currentStatus)}" style="padding:2px 8px;border-radius:4px;font-size:0.85rem;background:#eee;">${escapeHtml(currentStatus)}</span>
                 <span class="note">${escapeHtml(opinion.category || "未分類")}</span>
                 <span class="note">${formatDate(opinion.updatedAt || opinion.createdAt)}</span>
             </div>
-            <h3>${escapeHtml(opinion.content)}</h3>
+            <h3 style="margin-top:0;">${escapeHtml(opinion.content)}</h3>
             <p><strong>名前:</strong> ${escapeHtml(opinion.name || "匿名")}</p>
-            ${opinion.answered ? '<p><strong>回答の有無:</strong> あり</p>' : ""}
-            <p><strong>管理者の返答:</strong> ${escapeHtml(getOpinionStatusText(opinion))}</p>
+            ${opinion.answered ? '<p><strong>回答状況:</strong> あり</p>' : ""}
+            <div style="background:#f9f9f9;padding:10px;border-radius:6px;margin-top:8px;">
+                <strong>役員・管理者の返答:</strong>
+                <p style="margin:4px 0 0;">${escapeHtml(getOpinionStatusText(opinion))}</p>
+            </div>
         `;
         listEl.appendChild(card);
     });
 }
 
-function createOpinionRecord(form) {
-    const fd = new FormData(form);
-    return {
-        id: `OP-${Date.now()}`,
-        name: String(fd.get("name") || "").trim(),
-        category: String(fd.get("category") || "").trim(),
-        content: String(fd.get("content") || "").trim(),
-        answered: false,
-        status: OPINION_STATUS_UNCONFIRMED,
-        reason: "",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-    };
-}
-
-function fileToDataUrl(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(new Error("写真ファイルの読み込みに失敗しました。"));
-        reader.readAsDataURL(file);
-    });
-}
-
-async function fetchOpinionsFromGas() {
-    try {
-        const payload = await gasGet({ action: "getOpinions" });
-        const rows = Array.isArray(payload)
-            ? payload
-            : Array.isArray(payload?.data)
-                ? payload.data
-                : [];
-
-        return rows.map((row, idx) => normalizeOpinion({
-            id: String(row?.["投稿ID"] || `OP-${Date.now()}-${idx}`),
-            name: String(row?.["名前"] || "").trim(),
-            category: String(row?.["カテゴリ"] || "").trim(),
-            content: String(row?.["内容"] || "").trim(),
-            answered: String(row?.["返信状態"] || "") !== "未対応",
-            status: String(row?.["管理ステータス"] || "未確認"),
-            reason: String(row?.["返信状態"] || "").trim(),
-            createdAt: String(row?.["日時"] || ""),
-            updatedAt: String(row?.["日時"] || "")
-        })).filter((item) => item.content);
-    } catch {
-        return [];
+/**
+ * 意見の新規送信
+ */
+export async function submitOpinion(record, photoFile = null) {
+    if (isFirebaseReady && db) {
+        try {
+            await addDoc(collection(db, "opinions"), {
+                name: record.name || "匿名",
+                category: record.category,
+                content: record.content,
+                isPublic: record.isPublic !== false,
+                status: "未確認",
+                reply: "",
+                answered: false,
+                userUid: auth?.currentUser?.uid || "guest",
+                createdAt: new Date(),
+                updatedAt: new Date()
+            });
+            return { ok: true };
+        } catch (err) {
+            console.error("[Opinion] Firestore 投稿エラー:", err);
+            return { ok: false, error: err.message || err };
+        }
     }
-}
 
-async function submitOpinionToGas(record, photoPayload = null) {
-    const requestUrl = getGasUrl();
+    // GAS フォールバック
     try {
         const response = await gasPost({
             action: "addOpinion",
             name: record.name,
             category: record.category,
             content: record.content,
-            photoData: photoPayload?.photoData || "",
-            photoFileName: photoPayload?.photoFileName || "",
-            photoMimeType: photoPayload?.photoMimeType || "",
-            photoDescription: photoPayload?.photoDescription || ""
+            isPublic: record.isPublic !== false
         });
-
-        const hasBusinessError = response && (
-            response.ok === false
-            || response.success === false
-            || response.result === false
-            || response.isError === true
-            || Boolean(response.error)
-        );
-        if (hasBusinessError) {
-            return {
-                ok: false,
-                url: String(response?._requestUrl || requestUrl),
-                status: Number(response?._httpStatus || 200),
-                error: String(response?.error || response?.message || "GASから失敗応答が返されました。")
-            };
+        if (response && response.ok !== false && !response.error) {
+            return { ok: true };
         }
-
-        return {
-            ok: true,
-            url: String(response?._requestUrl || requestUrl),
-            status: Number(response?._httpStatus || 200),
-            error: ""
-        };
-    } catch (error) {
-        return {
-            ok: false,
-            url: requestUrl,
-            status: 0,
-            error: String(error && error.message || error)
-        };
+        return { ok: false, error: response?.error || "GAS送信に失敗しました。" };
+    } catch (err) {
+        return { ok: false, error: String(err.message || err) };
     }
 }
 
-export function initOpinionExchangePage() {
-    const form = document.getElementById("opinion-form");
-    const list = document.getElementById("opinion-entry-list");
-    const status = document.getElementById("opinion-status");
-
-    if (!form || !list) {
-        return;
+/**
+ * 管理者によるステータス・返答更新
+ */
+export async function updateOpinionByAdmin(opinionId, status, replyContent, answered = true) {
+    if (isFirebaseReady && db) {
+        try {
+            const opRef = doc(db, "opinions", opinionId);
+            await updateDoc(opRef, {
+                status: normalizeOpinionStatus(status),
+                reply: replyContent,
+                answered: Boolean(answered),
+                replyAt: new Date(),
+                updatedAt: new Date()
+            });
+            return { ok: true };
+        } catch (err) {
+            console.error("[Opinion] Firestore 更新エラー:", err);
+            return { ok: false, error: err.message || err };
+        }
     }
 
-    fetchOpinionsFromGas().then((opinionsFromGas) => {
-        const opinions = opinionsFromGas.length > 0 ? opinionsFromGas : loadLocalOpinions();
-        if (opinionsFromGas.length > 0) {
-            saveLocalOpinions(opinionsFromGas);
-        }
-        renderOpinionEntries(list, opinions);
-    }).catch(() => {
-        renderOpinionEntries(list, loadLocalOpinions());
-    });
+    return { ok: false, error: "Firestore未接続のため更新できません。" };
+}
 
-    form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const record = createOpinionRecord(form);
-        const formData = new FormData(form);
-        const photoFile = formData.get("photo");
-        const photoDescription = String(formData.get("photoDescription") || "").trim();
+/**
+ * 一般画面 (opinion.html) の初期化
+ */
+export async function initOpinionExchangePage(config = {}) {
+    const list = document.getElementById("opinion-list");
+    const form = document.getElementById("opinion-form");
+    const status = document.getElementById("opinion-form-status");
 
-        if (!record.category || !record.content) {
-            if (status) {
-                status.textContent = "情報と内容を入力してください。";
-            }
-            return;
-        }
+    if (!list) return;
 
-        let photoPayload = null;
-        if (photoFile instanceof File && photoFile.size > 0) {
-            try {
-                const photoData = await fileToDataUrl(photoFile);
-                photoPayload = {
-                    photoData,
-                    photoFileName: String(photoFile.name || ""),
-                    photoMimeType: String(photoFile.type || "image/jpeg"),
-                    photoDescription
-                };
-            } catch (error) {
-                if (status) {
-                    status.textContent = String(error?.message || error || "写真の読み込みに失敗しました。");
-                }
+    const opinions = await fetchOpinions();
+    renderOpinionEntries(list, opinions);
+
+    if (form) {
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const fd = new FormData(form);
+
+            const record = {
+                name: String(fd.get("name") || "").trim(),
+                category: String(fd.get("category") || "").trim(),
+                content: String(fd.get("content") || "").trim(),
+                isPublic: fd.get("isPublic") !== "false"
+            };
+
+            if (!record.category || !record.content) {
+                if (status) status.textContent = "カテゴリと相談内容を入力してください。";
                 return;
             }
-        }
 
-        const result = await submitOpinionToGas(record, photoPayload);
-        if (!result.ok) {
-            const nextOpinions = [record, ...loadLocalOpinions()];
-            saveLocalOpinions(nextOpinions);
-            renderOpinionEntries(list, nextOpinions);
-            form.reset();
-            if (status) {
-                status.textContent = `【通信失敗】URL: ${result.url} | エラー内容: HTTP=${result.status || "N/A"} / ${result.error}`;
+            if (status) status.textContent = "送信中...";
+
+            const res = await submitOpinion(record);
+            if (res.ok) {
+                if (status) {
+                    status.textContent = "ご意見・ご相談を投稿しました。ありがとうございます。";
+                    status.style.color = "#247246";
+                }
+                form.reset();
+                const updated = await fetchOpinions();
+                renderOpinionEntries(list, updated);
+            } else {
+                if (status) {
+                    status.textContent = `送信失敗: ${res.error}`;
+                    status.style.color = "#c0392b";
+                }
             }
-            return;
-        }
-
-        const refreshed = await fetchOpinionsFromGas();
-        const nextOpinions = refreshed.length > 0 ? refreshed : [record, ...loadLocalOpinions()];
-        saveLocalOpinions(nextOpinions);
-        renderOpinionEntries(list, nextOpinions);
-        form.reset();
-
-        if (status) {
-            status.textContent = `送信成功: URL=${result.url} | HTTP=${result.status}`;
-        }
-    });
+        });
+    }
 }
 
-function renderAdminOpinionCards(root, opinions) {
-    if (!root) {
-        return;
-    }
+/**
+ * 管理画面 (admin.html) の意見管理初期化
+ */
+export async function initAdminOpinionExchange(config = {}) {
+    const root = document.getElementById("admin-opinion-list");
+    const status = document.getElementById("admin-opinion-status");
+    if (!root) return;
 
-    if (opinions.length === 0) {
-        root.innerHTML = "<p class=\"note\">管理対象の投稿はありません。</p>";
-        return;
-    }
+    const opinions = await fetchOpinions();
+    if (status) status.textContent = `投稿 ${opinions.length}件 を読み込みました。`;
 
     root.innerHTML = "";
+    if (opinions.length === 0) {
+        root.innerHTML = "<p class='note'>管理対象の投稿はありません。</p>";
+        return;
+    }
+
     opinions.forEach((opinion) => {
         const card = document.createElement("article");
         card.className = "card opinion-admin-card";
+        card.style.marginBottom = "16px";
         card.dataset.opinionId = opinion.id;
+
         const currentStatus = normalizeOpinionStatus(opinion.status);
         card.innerHTML = `
-            <div class="opinion-admin-meta">
-                <span class="status-badge" data-status="${escapeHtml(currentStatus)}">${escapeHtml(currentStatus)}</span>
-                <span class="note">${escapeHtml(opinion.category || "未分類")}</span>
-                <span class="note">${formatDate(opinion.updatedAt || opinion.createdAt)}</span>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <span class="status-badge" style="padding:2px 8px;border-radius:4px;background:#eee;">${escapeHtml(currentStatus)}</span>
+                <span class="note">${escapeHtml(opinion.category || "未分類")} / ${formatDate(opinion.updatedAt || opinion.createdAt)}</span>
             </div>
-            <h3>${escapeHtml(opinion.content)}</h3>
-            <p><strong>名前:</strong> ${escapeHtml(opinion.name || "匿名")}</p>
-            ${opinion.answered ? '<p><strong>回答の有無:</strong> あり</p>' : ""}
-            <form class="opinion-admin-form">
-                <label>確認と返答
-                    <select name="status">
-                        <option value="未確認">未確認</option>
-                        <option value="検討中">検討中</option>
-                        <option value="対応中">対応中</option>
-                        <option value="解消">解消</option>
-                        <option value="その他">その他</option>
+            <h3 style="margin-top:0;">${escapeHtml(opinion.content)}</h3>
+            <p><strong>投稿者:</strong> ${escapeHtml(opinion.name || "匿名")} (${opinion.isPublic ? "全体公開" : "🔒 役員相談"})</p>
+            <form class="opinion-admin-form" style="background:#fcfcfc;padding:12px;border-radius:6px;border:1px solid #ddd;">
+                <label style="display:block;margin-bottom:8px;">対応ステータス:
+                    <select name="status" style="margin-left:8px;">
+                        <option value="未確認" ${currentStatus === '未確認' ? 'selected' : ''}>未確認</option>
+                        <option value="検討中" ${currentStatus === '検討中' ? 'selected' : ''}>検討中</option>
+                        <option value="対応中" ${currentStatus === '対応中' ? 'selected' : ''}>対応中</option>
+                        <option value="解消" ${currentStatus === '解消' ? 'selected' : ''}>解消</option>
+                        <option value="その他" ${currentStatus === 'その他' ? 'selected' : ''}>その他</option>
                     </select>
                 </label>
-                <label class="opinion-reason-field">
-                    事由
-                    <textarea name="reason" placeholder="管理者の対応内容や事由を入力"></textarea>
+                <label style="display:block;margin-bottom:8px;">返答・対応内容:
+                    <textarea name="reply" rows="2" style="width:100%;box-sizing:border-box;">${escapeHtml(opinion.reason || "")}</textarea>
                 </label>
-                <label class="checkbox-line">
-                    <input name="answered" type="checkbox">
-                    回答の有無
-                </label>
-                <div class="opinion-admin-actions">
-                    <button class="button" type="submit">保存</button>
-                </div>
-                <p class="note" data-role="admin-status"></p>
+                <button class="button" type="submit" style="padding:4px 12px;">返答を保存して他端末へ反映</button>
+                <span class="save-status note" style="margin-left:8px;"></span>
             </form>
         `;
 
-        const form = card.querySelector("form");
-        const select = card.querySelector('select[name="status"]');
-        const reasonField = card.querySelector(".opinion-reason-field");
-        const reasonInput = card.querySelector('textarea[name="reason"]');
-        const answeredInput = card.querySelector('input[name="answered"]');
-        const adminStatus = card.querySelector('[data-role="admin-status"]');
+        const form = card.querySelector(".opinion-admin-form");
+        const saveStatus = card.querySelector(".save-status");
 
-        if (select instanceof HTMLSelectElement) {
-            select.value = normalizeOpinionStatus(opinion.status);
-        }
-        if (reasonInput instanceof HTMLTextAreaElement) {
-            reasonInput.value = opinion.reason || "";
-        }
-        if (answeredInput instanceof HTMLInputElement) {
-            answeredInput.checked = Boolean(opinion.answered);
-        }
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const fd = new FormData(form);
+            const nextStatus = fd.get("status");
+            const reply = String(fd.get("reply") || "").trim();
 
-        const updateReasonVisibility = () => {
-            const shouldShow = select instanceof HTMLSelectElement && select.value !== OPINION_STATUS_UNCONFIRMED;
-            reasonField?.classList.toggle("visible", shouldShow);
-            if (reasonInput instanceof HTMLTextAreaElement) {
-                reasonInput.required = shouldShow;
-            }
-        };
+            saveStatus.textContent = "保存中...";
+            saveStatus.style.color = "";
 
-        updateReasonVisibility();
-
-        select?.addEventListener("change", updateReasonVisibility);
-
-        form?.addEventListener("submit", (event) => {
-            event.preventDefault();
-
-            const currentOpinions = loadLocalOpinions();
-            const index = currentOpinions.findIndex((item) => item.id === opinion.id);
-            if (index === -1) {
-                if (adminStatus) {
-                    adminStatus.textContent = "対象の投稿が見つかりません。";
-                }
-                return;
-            }
-
-            const nextStatus = normalizeOpinionStatus(select?.value);
-            const nextReason = String(reasonInput?.value || "").trim();
-            if (nextStatus !== OPINION_STATUS_UNCONFIRMED && !nextReason) {
-                if (adminStatus) {
-                    adminStatus.textContent = "未確認以外を選ぶ場合は事由を入力してください。";
-                }
-                return;
-            }
-
-            currentOpinions[index] = {
-                ...currentOpinions[index],
-                status: nextStatus,
-                reason: nextStatus === OPINION_STATUS_UNCONFIRMED ? "" : nextReason,
-                answered: Boolean(answeredInput?.checked),
-                updatedAt: new Date().toISOString()
-            };
-
-            saveLocalOpinions(currentOpinions);
-            renderAdminOpinionCards(root, currentOpinions);
-            const nextAdminStatus = document.getElementById("admin-opinion-status");
-            if (nextAdminStatus) {
-                nextAdminStatus.textContent = "保存しました。";
+            const res = await updateOpinionByAdmin(opinion.id, nextStatus, reply, Boolean(reply));
+            if (res.ok) {
+                saveStatus.textContent = "保存完了！他端末にも即時反映されます。";
+                saveStatus.style.color = "#247246";
+            } else {
+                saveStatus.textContent = `保存失敗: ${res.error}`;
+                saveStatus.style.color = "#c0392b";
             }
         });
+
+        root.appendChild(card);
     });
-}
-
-export function initAdminOpinionExchange() {
-    const root = document.getElementById("admin-opinion-list");
-    const status = document.getElementById("admin-opinion-status");
-    if (!root) {
-        return;
-    }
-
-    if (status) {
-        status.textContent = "投稿一覧を読み込みました。";
-    }
-
-    renderAdminOpinionCards(root, loadLocalOpinions());
 }

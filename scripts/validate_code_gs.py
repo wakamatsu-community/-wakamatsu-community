@@ -1,6 +1,6 @@
 import re, pathlib
 
-p = pathlib.Path(r'D:\町内会活動\町内会HP（Google）\code.gs')
+p = pathlib.Path(__file__).resolve().parent.parent / "code.gs"
 text = p.read_text(encoding='utf-8')
 lines = text.splitlines()
 

@@ -1,13 +1,31 @@
+/**
+ * 若松町内会ホームページ 備品予約モジュール
+ *
+ * - 備品マスタ管理 (Firestore equipmentMaster / config.items)
+ * - 4週間空き状況ガントチャート (日別厳密残数計算)
+ * - 複数備品予約カート
+ * - Firestore ACIDトランザクション (runTransaction) による完全排他制御・在庫超過防止
+ * - 予約ライフサイクル管理 (申請 requested → 承認 approved → 貸出 borrowed → 返納完了 returned)
+ */
+
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
+import { db, isFirebaseReady, auth } from "./firebase-init.js";
+import {
+    collection,
+    doc,
+    getDocs,
+    getDoc,
+    query,
+    where,
+    runTransaction,
+    updateDoc,
+    orderBy
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const STATUS_CACHE_KEY = "wakamatsu_equipment_status_v1";
 
 function normalize(text) {
     return String(text || "").toLowerCase().replace(/\s+/g, "");
-}
-
-function isConfigured(url) {
-    return Boolean(url && !url.includes("sample-"));
 }
 
 function formatDate(date) {
@@ -40,244 +58,220 @@ function itemListToLabel(items) {
     return items.map((item) => `${item.equipmentLabel} x${item.quantity}`).join(" / ");
 }
 
-function parseGvizJson(text) {
-    const jsonText = text.replace(/^[^(]+\(/, "").replace(/\);?\s*$/, "");
-    return JSON.parse(jsonText);
-}
-
-async function fetchSheetRows(url) {
-    if (!isConfigured(url)) {
-        return null;
-    }
-    try {
-        const res = await fetch(url, { cache: "no-store" });
-        const text = await res.text();
-        const data = parseGvizJson(text);
-        return data?.table?.rows || [];
-    } catch {
-        return null;
-    }
-}
-
-function buildSearchIndex(items) {
-    return items.map((item) => ({
-        ...item,
-        _search: normalize(`${item.label} ${(item.aliases || []).join(" ")}`)
-    }));
-}
-
-function toFlatReservationItems(sourceList) {
-    return sourceList.flatMap((entry) => {
-        if (entry.items && Array.isArray(entry.items)) {
-            return entry.items.map((item) => ({
-                recordId: entry.id,
-                createdAt: entry.createdAt,
-                equipmentId: item.equipmentId,
-                equipmentLabel: item.equipmentLabel,
-                quantity: Number(item.quantity || 1),
-                loanDate: item.loanDate,
-                returnDate: item.returnDate
-            }));
-        }
-
-        return [{
-            recordId: entry.id || `R-${Date.now()}`,
-            createdAt: entry.createdAt || new Date().toISOString(),
-            equipmentId: entry.equipmentId,
-            equipmentLabel: entry.equipmentLabel,
-            quantity: Number(entry.quantity || 1),
-            loanDate: entry.loanDate,
-            returnDate: entry.returnDate
-        }];
-    });
-}
-
+/**
+ * 備品マスタの読み込み (Firestore優先、フォールバックあり)
+ */
 async function loadEquipmentItems(config) {
-    try {
-        const payload = await gasGet({ type: "getEquipment" });
-        const masters = Array.isArray(payload?.data?.masters)
-            ? payload.data.masters
-            : Array.isArray(payload?.masters)
-                ? payload.masters
-                : [];
-
-        const parsedFromGas = masters
-            .map((row, index) => ({
-                id: String(row?.["備品ID"] || row?.id || `EQ-${index + 1}`).trim(),
-                label: String(row?.["備品名"] || row?.label || "").trim(),
-                stock: Number(row?.["総在庫数"] || row?.stock || 1),
-                aliases: String(row?.aliases || "").split(",").map((x) => x.trim()).filter(Boolean)
-            }))
-            .filter((item) => item.id && item.label);
-
-        if (parsedFromGas.length > 0) {
-            return parsedFromGas;
+    // 1. Firestore からの取得
+    if (isFirebaseReady && db) {
+        try {
+            const masterSnap = await getDocs(collection(db, "equipmentMaster"));
+            const items = [];
+            masterSnap.forEach((docSnap) => {
+                const data = docSnap.data();
+                items.push({
+                    id: docSnap.id,
+                    label: data.name || docSnap.id,
+                    stock: Number(data.stock || 1),
+                    aliases: Array.isArray(data.aliases) ? data.aliases : []
+                });
+            });
+            if (items.length > 0) return items;
+        } catch (err) {
+            console.warn("[Equipment] Firestore マスタ取得エラー:", err);
         }
-    } catch {
-        // GAS取得失敗時のみ下のフォールバックへ進む
     }
 
-    const rows = await fetchSheetRows(config?.equipment?.sheets?.masterSheetUrl);
-    if (!rows) {
-        return config?.equipment?.items || [];
-    }
-
-    const parsed = rows
-        .map((row) => {
-            const c = row.c || [];
-            return {
-                id: String(c[0]?.v || "").trim(),
-                label: String(c[1]?.v || "").trim(),
-                stock: Number(c[2]?.v || 1),
-                aliases: String(c[3]?.v || "").split(",").map((x) => x.trim()).filter(Boolean)
-            };
-        })
-        .filter((item) => item.id && item.label);
-
-    return parsed.length > 0 ? parsed : (config?.equipment?.items || []);
+    // 2. config.items または デフォルト
+    return config?.equipment?.items || [
+        { id: "tent", label: "テント", stock: 3, aliases: ["てんと", "大型テント", "イベント"] },
+        { id: "table", label: "長机", stock: 10, aliases: ["机", "つくえ", "会議机"] },
+        { id: "chair", label: "椅子", stock: 30, aliases: ["いす", "パイプ椅子"] },
+        { id: "generator", label: "発電機", stock: 2, aliases: ["はつでんき", "電源"] },
+        { id: "mower", label: "草刈機", stock: 2, aliases: ["くさかり", "草刈り機"] }
+    ];
 }
 
+/**
+ * 予約台帳の読み込み (Firestore優先)
+ */
 async function loadReservationItems(config) {
-    try {
-        const payload = await gasGet({ type: "equipment_status" });
-        const rows = Array.isArray(payload)
-            ? payload
-            : Array.isArray(payload?.items)
-                ? payload.items
-                : Array.isArray(payload?.data)
-                    ? payload.data
-                    : [];
-
-        const parsed = rows
-            .map((row, index) => ({
-                recordId: String(row?.recordId || row?.id || `R-${Date.now()}-${index}`),
-                equipmentId: String(row?.equipmentId || ""),
-                equipmentLabel: String(row?.equipmentLabel || row?.equipment || ""),
-                quantity: Number(row?.quantity || 1),
-                loanDate: String(row?.loanDate || row?.loan || ""),
-                returnDate: String(row?.returnDate || row?.return || ""),
-                createdAt: String(row?.createdAt || new Date().toISOString())
-            }))
-            .filter((item) => item.equipmentLabel && item.loanDate && item.returnDate);
-
-        if (parsed.length > 0) {
-            localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify(parsed));
-            return parsed;
+    if (isFirebaseReady && db) {
+        try {
+            const q = query(
+                collection(db, "equipmentReservations"),
+                where("status", "in", ["requested", "approved", "borrowed"])
+            );
+            const snap = await getDocs(q);
+            const list = [];
+            snap.forEach((docSnap) => {
+                const data = docSnap.data();
+                list.push({
+                    recordId: docSnap.id,
+                    equipmentId: data.equipmentId,
+                    equipmentLabel: data.equipmentName || data.equipmentLabel,
+                    quantity: Number(data.quantity || 1),
+                    loanDate: data.startDate || data.loanDate,
+                    returnDate: data.endDate || data.returnDate,
+                    status: data.status || "requested",
+                    applicant: data.applicantName || data.applicant || "",
+                    phone: data.phone || "",
+                    group: data.group || "",
+                    createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : String(data.createdAt || "")
+                });
+            });
+            if (list.length > 0) {
+                localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify(list));
+                return list;
+            }
+        } catch (err) {
+            console.warn("[Equipment] Firestore 予約一覧取得エラー:", err);
         }
-    } catch {
-        // 通信失敗時は安全データのみのローカルキャッシュへフォールバック
     }
 
+    // ローカルキャッシュまたはモック
     const saved = localStorage.getItem(STATUS_CACHE_KEY);
     if (saved) {
-        try {
-            return JSON.parse(saved);
-        } catch {
-            localStorage.removeItem(STATUS_CACHE_KEY);
-        }
+        try { return JSON.parse(saved); } catch {}
     }
-
-    const mockFlat = toFlatReservationItems(config?.equipment?.mockReservations || []);
-    localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify(mockFlat));
-    return mockFlat;
+    return [];
 }
 
-function saveReservationItemsLocal(items) {
-    localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify(items));
+/**
+ * 指定日の使用数量を集計
+ */
+function getUsedQuantity(reservations, equipmentId, dateStr) {
+    return reservations
+        .filter((r) => r.equipmentId === equipmentId && inRange(dateStr, r.loanDate, r.returnDate))
+        .reduce((sum, r) => sum + Number(r.quantity || 1), 0);
 }
 
-async function submitToGas(payload) {
-    const requestUrl = getGasUrl();
-    try {
-        const response = await gasPost(payload);
-        const hasBusinessError = response && (
-            response.ok === false
-            || response.success === false
-            || response.result === false
-            || response.isError === true
-            || Boolean(response.error)
-        );
+/**
+ * 指定期間内の最小空き在庫数を取得
+ */
+function getMinRemainingOnRange(reservations, equipmentId, totalStock, startDate, endDate) {
+    let curr = new Date(startDate);
+    const end = new Date(endDate);
+    let minRemain = totalStock;
 
-        if (hasBusinessError) {
-            return {
-                ok: false,
-                url: String(response?._requestUrl || requestUrl),
-                status: Number(response?._httpStatus || 200),
-                error: String(response?.error || response?.message || "GASから失敗応答が返されました。")
-            };
-        }
-
-        return {
-            ok: true,
-            url: String(response?._requestUrl || requestUrl),
-            status: Number(response?._httpStatus || 200),
-            error: ""
-        };
-    } catch (error) {
-        return {
-            ok: false,
-            url: requestUrl,
-            status: 0,
-            error: String(error && error.message || error)
-        };
+    while (curr <= end) {
+        const dStr = formatDate(curr);
+        const used = getUsedQuantity(reservations, equipmentId, dStr);
+        minRemain = Math.min(minRemain, totalStock - used);
+        curr = addDays(curr, 1);
     }
-}
-
-function getUsedQuantity(flatItems, equipmentId, date) {
-    return flatItems
-        .filter((item) => item.equipmentId === equipmentId && inRange(date, item.loanDate, item.returnDate))
-        .reduce((sum, item) => sum + Number(item.quantity || 1), 0);
-}
-
-function getMinRemainingOnRange(flatItems, equipmentId, stock, startDate, endDate) {
-    let current = startDate;
-    let minRemaining = stock;
-    while (current <= endDate) {
-        const dateStr = formatDate(current);
-        const used = getUsedQuantity(flatItems, equipmentId, dateStr);
-        minRemaining = Math.min(minRemaining, stock - used);
-        current = addDays(current, 1);
-    }
-    return minRemaining;
+    return Math.max(0, minRemain);
 }
 
 function createGanttCell(dateStr, used, stock) {
     const cell = document.createElement("button");
     cell.type = "button";
-    const remaining = stock - used;
+    const remaining = Math.max(0, stock - used);
     const statusClass = remaining <= 0 ? "loaned" : remaining < stock ? "partial" : "free";
     cell.className = `gantt-cell ${statusClass}`;
     cell.dataset.date = dateStr;
-    cell.dataset.remaining = String(Math.max(0, remaining));
-    cell.textContent = remaining <= 0 ? "満" : `空${remaining}`;
+    cell.dataset.remaining = String(remaining);
+    cell.innerHTML = `
+        <span class="gantt-day-num">${Number(dateStr.slice(8, 10))}</span>
+        <span class="gantt-badge">${remaining <= 0 ? "満" : `残${remaining}`}</span>
+    `;
     return cell;
 }
 
-function applySheetLinks(config, ids) {
-    const master = document.getElementById(ids.master);
-    const reserve = document.getElementById(ids.reservation);
-    const masterUrl = config?.equipment?.sheets?.masterEditUrl || "#";
-    const reserveUrl = config?.equipment?.sheets?.reservationEditUrl || "#";
+/**
+ * Firestore トランザクションによる排他制御予約
+ */
+async function executeReservationTransaction(applicant, phone, group, items) {
+    if (!isFirebaseReady || !db) {
+        throw new Error("Firebase が接続されていません。");
+    }
 
-    if (master) {
-        master.href = masterUrl;
-        master.classList.toggle("disabled-link", masterUrl === "#");
-    }
-    if (reserve) {
-        reserve.href = reserveUrl;
-        reserve.classList.toggle("disabled-link", reserveUrl === "#");
-    }
+    return await runTransaction(db, async (transaction) => {
+        // 1. 各備品のマスタと現在の重複予約を確認
+        const masterRefMap = new Map();
+        const masterStockMap = new Map();
+
+        for (const item of items) {
+            const mRef = doc(db, "equipmentMaster", item.equipmentId);
+            masterRefMap.set(item.equipmentId, mRef);
+            const mSnap = await transaction.get(mRef);
+            const stock = mSnap.exists() ? Number(mSnap.data().stock || 1) : 1;
+            masterStockMap.set(item.equipmentId, stock);
+        }
+
+        // 2. 期間重複の既存予約を検証
+        const reservationsRef = collection(db, "equipmentReservations");
+        const existingSnap = await getDocs(query(
+            reservationsRef,
+            where("status", "in", ["requested", "approved", "borrowed"])
+        ));
+
+        const existingList = [];
+        existingSnap.forEach((docSnap) => {
+            const d = docSnap.data();
+            existingList.push({
+                equipmentId: d.equipmentId,
+                quantity: Number(d.quantity || 1),
+                loanDate: d.startDate || d.loanDate,
+                returnDate: d.endDate || d.returnDate
+            });
+        });
+
+        // 3. 在庫超過チェック
+        for (const item of items) {
+            const stock = masterStockMap.get(item.equipmentId) || 1;
+            let checkCurr = new Date(item.loanDate);
+            const checkEnd = new Date(item.returnDate);
+
+            while (checkCurr <= checkEnd) {
+                const dStr = formatDate(checkCurr);
+                const used = getUsedQuantity(existingList, item.equipmentId, dStr);
+                if (used + item.quantity > stock) {
+                    const remain = Math.max(0, stock - used);
+                    throw new Error(`「${item.equipmentLabel}」の在庫が ${dStr} に不足しています（希望: ${item.quantity}台 / 残り: ${remain}台）。`);
+                }
+                checkCurr = addDays(checkCurr, 1);
+            }
+        }
+
+        // 4. アトミックに予約を作成
+        const createdIds = [];
+        const userUid = auth?.currentUser?.uid || "guest";
+
+        for (const item of items) {
+            const newDocRef = doc(collection(db, "equipmentReservations"));
+            transaction.set(newDocRef, {
+                equipmentId: item.equipmentId,
+                equipmentName: item.equipmentLabel,
+                quantity: item.quantity,
+                startDate: item.loanDate,
+                endDate: item.returnDate,
+                userUid,
+                applicantName: applicant,
+                phone,
+                group,
+                status: "requested",
+                createdAt: new Date(),
+                updatedAt: new Date()
+            });
+            createdIds.push(newDocRef.id);
+        }
+
+        return createdIds;
+    });
 }
 
-export async function initEquipmentPage(config) {
+/**
+ * 備品予約ページ初期化
+ */
+export async function initEquipmentPage(config = {}) {
     const select = document.getElementById("equipment-select");
     const searchInput = document.getElementById("equipment-search");
     const selectedNote = document.getElementById("equipment-selected-note");
-    const timelineStartInput = document.getElementById("timeline-start-date");
-    const timelineReset = document.getElementById("timeline-reset");
     const ganttRoot = document.getElementById("equipment-gantt");
     const selectionNote = document.getElementById("gantt-selection-note");
-
+    const timelineStartInput = document.getElementById("timeline-start-date");
+    const timelineReset = document.getElementById("timeline-reset");
     const form = document.getElementById("equipment-reservation-form");
     const formEquipment = document.getElementById("reserve-equipment");
     const formQuantity = document.getElementById("reserve-quantity");
@@ -288,140 +282,148 @@ export async function initEquipmentPage(config) {
     const itemsEmpty = document.getElementById("reservation-items-empty");
     const formStatus = document.getElementById("reservation-status");
 
-    if (!select || !searchInput || !ganttRoot || !form || !timelineStartInput || !formQuantity || !addItemButton || !itemsList) {
+    if (!(select && searchInput && ganttRoot && form && formEquipment && formQuantity && formLoanDate && formReturnDate && addItemButton && itemsList)) {
         return;
     }
 
-    const indexedItems = buildSearchIndex(await loadEquipmentItems(config));
-
-    let filteredItems = indexedItems;
-    let selectedItem = indexedItems[0] || null;
+    const equipmentItems = await loadEquipmentItems(config);
     let reservationItems = await loadReservationItems(config);
-    let rangeStart = new Date();
-    let tapStartDate = "";
-    let pendingItems = [];
 
-    function refreshPendingList() {
+    const indexedItems = equipmentItems.map((item) => ({
+        ...item,
+        _search: normalize(`${item.label} ${(item.aliases || []).join(" ")}`)
+    }));
+
+    let filteredItems = [...indexedItems];
+    let selectedItem = indexedItems[0] || null;
+    let rangeStart = getWeekStart(new Date());
+    let tapStartDate = "";
+    let pendingCart = [];
+
+    function fillSelect(items) {
+        select.innerHTML = "";
+        items.forEach((item) => {
+            const opt = document.createElement("option");
+            opt.value = item.id;
+            opt.textContent = `${item.label}（総数: ${item.stock}台）`;
+            select.appendChild(opt);
+        });
+        if (selectedItem) select.value = selectedItem.id;
+    }
+
+    function refreshCartUI() {
         itemsList.innerHTML = "";
-        if (pendingItems.length === 0) {
-            itemsEmpty?.classList.remove("hidden");
+        if (pendingCart.length === 0) {
+            if (itemsEmpty) itemsEmpty.classList.remove("hidden");
             return;
         }
+        if (itemsEmpty) itemsEmpty.classList.add("hidden");
 
-        itemsEmpty?.classList.add("hidden");
-        pendingItems.forEach((item, index) => {
+        pendingCart.forEach((item, index) => {
             const li = document.createElement("li");
-            li.textContent = `${item.equipmentLabel} x${item.quantity} / ${item.loanDate} 〜 ${item.returnDate}`;
+            li.style.display = "flex";
+            li.style.justifyContent = "space-between";
+            li.style.alignItems = "center";
+            li.style.padding = "6px 0";
+            li.style.borderBottom = "1px solid #eee";
 
-            const removeButton = document.createElement("button");
-            removeButton.type = "button";
-            removeButton.className = "button mini-button";
-            removeButton.textContent = "削除";
-            removeButton.addEventListener("click", () => {
-                pendingItems = pendingItems.filter((_, i) => i !== index);
-                refreshPendingList();
+            const text = document.createElement("span");
+            text.textContent = `${item.equipmentLabel} x${item.quantity}台 (${item.loanDate} 〜 ${item.returnDate})`;
+
+            const delBtn = document.createElement("button");
+            delBtn.type = "button";
+            delBtn.className = "button danger";
+            delBtn.style.padding = "2px 8px";
+            delBtn.style.fontSize = "0.8rem";
+            delBtn.textContent = "取消";
+            delBtn.addEventListener("click", () => {
+                pendingCart.splice(index, 1);
+                refreshCartUI();
                 renderGantt();
             });
 
-            li.appendChild(removeButton);
+            li.append(text, delBtn);
             itemsList.appendChild(li);
         });
     }
 
-    function fillSelect(items) {
-        const previous = select.value;
-        select.innerHTML = "";
-
-        items.forEach((item) => {
-            const option = document.createElement("option");
-            option.value = item.id;
-            option.textContent = `${item.label}（在庫${item.stock}）`;
-            select.appendChild(option);
-        });
-
-        if (items.length === 0) {
-            const option = document.createElement("option");
-            option.value = "";
-            option.textContent = "該当なし";
-            select.appendChild(option);
-            select.disabled = true;
-            selectedItem = null;
-            return;
-        }
-
-        select.disabled = false;
-        const restored = items.find((item) => item.id === previous) || items[0];
-        select.value = restored.id;
-        selectedItem = restored;
-    }
-
     function renderGantt() {
         ganttRoot.innerHTML = "";
+        if (!selectedItem) return;
 
-        if (!selectedItem) {
-            ganttRoot.innerHTML = "<p class='note'>備品が選択されていません。</p>";
-            return;
+        const stock = selectedItem.stock || 1;
+        const dates = [];
+        for (let i = 0; i < 28; i++) {
+            dates.push(formatDate(addDays(rangeStart, i)));
         }
 
-        const rangeStartWeek = getWeekStart(rangeStart);
-        const dates = Array.from({ length: 28 }, (_, i) => formatDate(addDays(rangeStartWeek, i)));
-
+        // 曜日ヘッダー
         const header = document.createElement("div");
         header.className = "gantt-header";
-        header.innerHTML = "<span>週/曜日</span>";
-        ["日", "月", "火", "水", "木", "金", "土"].forEach((day) => {
-            const label = document.createElement("span");
-            label.textContent = day;
-            header.appendChild(label);
+        const emptyLabel = document.createElement("span");
+        emptyLabel.className = "gantt-equipment-name";
+        emptyLabel.textContent = "週 / 曜日";
+        header.appendChild(emptyLabel);
+
+        ["日", "月", "火", "水", "木", "金", "土"].forEach((w, idx) => {
+            const span = document.createElement("span");
+            span.textContent = w;
+            if (idx === 0) span.style.color = "#c0392b";
+            if (idx === 6) span.style.color = "#2980b9";
+            header.appendChild(span);
         });
 
-        const effectiveItems = [...reservationItems, ...pendingItems.map((item) => ({ ...item, recordId: "TEMP" }))];
-        const stock = Number(selectedItem.stock || 1);
+        // カート内の一時予約も合算して空き状況をリアルタイム計算
+        const combinedReservations = [
+            ...reservationItems,
+            ...pendingCart.map((c) => ({
+                equipmentId: c.equipmentId,
+                quantity: c.quantity,
+                loanDate: c.loanDate,
+                returnDate: c.returnDate
+            }))
+        ];
 
         const rows = [];
-        for (let week = 0; week < 4; week += 1) {
+        for (let week = 0; week < 4; week++) {
             const row = document.createElement("div");
             row.className = "gantt-row";
 
-            const weekStartDate = dates[week * 7];
-            const weekEndDate = dates[week * 7 + 6];
+            const weekStartStr = dates[week * 7];
+            const weekEndStr = dates[week * 7 + 6];
             const nameCell = document.createElement("span");
             nameCell.className = "gantt-equipment-name";
-            nameCell.textContent = `${Number(weekStartDate.slice(5, 7))}/${Number(weekStartDate.slice(8, 10))}〜${Number(weekEndDate.slice(5, 7))}/${Number(weekEndDate.slice(8, 10))}`;
+            nameCell.textContent = `${Number(weekStartStr.slice(5, 7))}/${Number(weekStartStr.slice(8, 10))}〜`;
             row.appendChild(nameCell);
 
-            dates.slice(week * 7, week * 7 + 7).forEach((date) => {
-                const used = getUsedQuantity(effectiveItems, selectedItem.id, date);
-                const cell = createGanttCell(date, used, stock);
+            dates.slice(week * 7, week * 7 + 7).forEach((dStr) => {
+                const used = getUsedQuantity(combinedReservations, selectedItem.id, dStr);
+                const cell = createGanttCell(dStr, used, stock);
+
                 cell.addEventListener("click", () => {
                     const remaining = Number(cell.dataset.remaining || "0");
                     if (remaining <= 0) {
-                        selectionNote.textContent = "貸出中の日付は選択できません。";
+                        selectionNote.textContent = `${dStr} は在庫なしのため選択できません。`;
                         return;
                     }
 
-                    if (!tapStartDate || date < tapStartDate) {
-                        tapStartDate = date;
-                        formLoanDate.value = date;
-                        formReturnDate.value = date;
+                    if (!tapStartDate || dStr < tapStartDate) {
+                        tapStartDate = dStr;
+                        formLoanDate.value = dStr;
+                        formReturnDate.value = dStr;
                         formQuantity.max = String(remaining);
                         formQuantity.value = "1";
-                        selectionNote.textContent = `開始日を ${date} に設定しました。`;
+                        selectionNote.textContent = `貸出日を ${dStr} に設定しました。返納日をタップしてください。`;
                     } else {
                         formLoanDate.value = tapStartDate;
-                        formReturnDate.value = date;
-                        const minRemaining = getMinRemainingOnRange(
-                            effectiveItems,
-                            selectedItem.id,
-                            stock,
-                            new Date(tapStartDate),
-                            new Date(date)
-                        );
-                        formQuantity.max = String(Math.max(1, minRemaining));
-                        formQuantity.value = String(Math.min(Number(formQuantity.value || 1), Math.max(1, minRemaining)));
-                        selectionNote.textContent = `利用期間を ${tapStartDate} 〜 ${date} に設定しました。`;
+                        formReturnDate.value = dStr;
+                        const minRemain = getMinRemainingOnRange(combinedReservations, selectedItem.id, stock, tapStartDate, dStr);
+                        formQuantity.max = String(Math.max(1, minRemain));
+                        formQuantity.value = String(Math.min(Number(formQuantity.value || 1), Math.max(1, minRemain)));
+                        selectionNote.textContent = `期間: ${tapStartDate} 〜 ${dStr} (最小空き数: ${minRemain}台)`;
                     }
                 });
+
                 row.appendChild(cell);
             });
 
@@ -429,62 +431,52 @@ export async function initEquipmentPage(config) {
         }
 
         ganttRoot.append(header, ...rows);
-        selectedNote.textContent = `表示中: ${selectedItem.label}`;
+        selectedNote.textContent = `表示中: ${selectedItem.label}（総数: ${selectedItem.stock}台）`;
         formEquipment.value = selectedItem.label;
     }
 
-    function applySearch() {
+    fillSelect(filteredItems);
+    renderGantt();
+
+    // 検索フィルタ
+    searchInput.addEventListener("input", () => {
         const keyword = normalize(searchInput.value);
         filteredItems = indexedItems.filter((item) => item._search.includes(keyword));
         fillSelect(filteredItems);
+        selectedItem = filteredItems[0] || null;
         tapStartDate = "";
         renderGantt();
+    });
+
+    select.addEventListener("change", () => {
+        selectedItem = indexedItems.find((item) => item.id === select.value) || indexedItems[0] || null;
+        tapStartDate = "";
+        renderGantt();
+    });
+
+    if (timelineReset) {
+        timelineReset.addEventListener("click", () => {
+            rangeStart = getWeekStart(new Date());
+            tapStartDate = "";
+            renderGantt();
+        });
     }
 
-    function hasConflict(equipmentId, loanDate, returnDate, quantity) {
-        const stock = Number((indexedItems.find((item) => item.id === equipmentId)?.stock) || 1);
-        let current = new Date(loanDate);
-        const end = new Date(returnDate);
-        const effectiveItems = [...reservationItems, ...pendingItems.map((item) => ({ ...item, recordId: "TEMP" }))];
-
-        while (current <= end) {
-            const used = getUsedQuantity(effectiveItems, equipmentId, formatDate(current));
-            if (used + quantity > stock) {
-                return true;
-            }
-            current = addDays(current, 1);
-        }
-        return false;
-    }
-
+    // カート追加ボタン
     addItemButton.addEventListener("click", () => {
-        if (!selectedItem) {
-            formStatus.textContent = "備品を選択してください。";
-            return;
-        }
+        if (!selectedItem) return;
 
         const quantity = Number(formQuantity.value || 1);
-        const loanDate = String(formLoanDate.value || "");
-        const returnDate = String(formReturnDate.value || "");
+        const loanDate = formLoanDate.value;
+        const returnDate = formReturnDate.value;
 
         if (!loanDate || !returnDate) {
-            formStatus.textContent = "貸出日と返納日を選択してください。";
-            return;
-        }
-        if (returnDate < loanDate) {
-            formStatus.textContent = "返納日は貸出日以降を指定してください。";
-            return;
-        }
-        if (!Number.isInteger(quantity) || quantity <= 0) {
-            formStatus.textContent = "数量は1以上の整数で入力してください。";
-            return;
-        }
-        if (hasConflict(selectedItem.id, loanDate, returnDate, quantity)) {
-            formStatus.textContent = "在庫を超えるため、この数量では予約できません。";
+            formStatus.textContent = "カレンダーから貸出日と返納日を選択してください。";
+            formStatus.style.color = "#c0392b";
             return;
         }
 
-        pendingItems.push({
+        pendingCart.push({
             equipmentId: selectedItem.id,
             equipmentLabel: selectedItem.label,
             quantity,
@@ -492,120 +484,112 @@ export async function initEquipmentPage(config) {
             returnDate
         });
 
-        formStatus.textContent = `${selectedItem.label} x${quantity} を予約リストへ追加しました。`;
+        formStatus.textContent = `「${selectedItem.label} x${quantity}台」をカートに追加しました。`;
+        formStatus.style.color = "#247246";
         tapStartDate = "";
-        refreshPendingList();
+        refreshCartUI();
         renderGantt();
     });
 
-    fillSelect(filteredItems);
-    const today = formatDate(new Date());
-    timelineStartInput.value = today;
-    rangeStart = new Date(today);
-    renderGantt();
-    refreshPendingList();
+    // フォーム送信（トランザクション実行）
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
 
-    searchInput.addEventListener("input", applySearch);
-    select.addEventListener("change", () => {
-        selectedItem = filteredItems.find((item) => item.id === select.value) || filteredItems[0] || null;
-        tapStartDate = "";
-        renderGantt();
-    });
-    timelineStartInput.addEventListener("change", () => {
-        rangeStart = new Date(timelineStartInput.value || today);
-        tapStartDate = "";
-        renderGantt();
-    });
-    timelineReset.addEventListener("click", () => {
-        const currentWeekStart = getWeekStart(new Date());
-        rangeStart = currentWeekStart;
-        timelineStartInput.value = formatDate(currentWeekStart);
-        tapStartDate = "";
-        renderGantt();
-    });
-
-    form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-
-        if (pendingItems.length === 0) {
-            formStatus.textContent = "先に備品を予約リストへ追加してください。";
+        if (pendingCart.length === 0) {
+            formStatus.textContent = "先に備品をカート（予約リスト）へ追加してください。";
+            formStatus.style.color = "#c0392b";
             return;
         }
 
-        const formData = new FormData(form);
-        const name = String(formData.get("name") || "").trim();
-        const phone = String(formData.get("phone") || "").trim();
-        const group = String(formData.get("group") || "").trim();
+        const fd = new FormData(form);
+        const name = String(fd.get("name") || "").trim();
+        const phone = String(fd.get("phone") || "").trim();
+        const group = String(fd.get("group") || "").trim();
 
         if (!name || !phone || !group) {
             formStatus.textContent = "氏名・電話番号・組班を入力してください。";
+            formStatus.style.color = "#c0392b";
             return;
         }
 
-        const recordId = `R-${Date.now()}`;
-        const createdAt = new Date().toISOString();
+        formStatus.textContent = "在庫を確認し、予約トランザクションを実行中...";
+        formStatus.style.color = "";
 
-        const flatRows = pendingItems.map((item) => ({
-            recordId,
-            equipmentId: item.equipmentId,
-            equipmentLabel: item.equipmentLabel,
-            quantity: item.quantity,
-            loanDate: item.loanDate,
-            returnDate: item.returnDate,
-            createdAt
-        }));
+        try {
+            if (isFirebaseReady && db) {
+                // Firestore トランザクション
+                await executeReservationTransaction(name, phone, group, pendingCart);
+                formStatus.textContent = `予約申請が完了しました（${itemListToLabel(pendingCart)}）。管理者の承認後に確定します。`;
+                formStatus.style.color = "#247246";
+            } else {
+                // GAS フォールバック
+                const posted = await gasPost({
+                    action: "reserveEquipment",
+                    applicant: name,
+                    phone,
+                    group,
+                    items: pendingCart.map((c) => ({
+                        equipment: c.equipmentLabel,
+                        equipmentId: c.equipmentId,
+                        quantity: c.quantity,
+                        loanDate: c.loanDate,
+                        returnDate: c.returnDate
+                    }))
+                });
+                if (posted && posted.ok !== false && !posted.error) {
+                    formStatus.textContent = `予約が送信されました（${itemListToLabel(pendingCart)}）。`;
+                    formStatus.style.color = "#247246";
+                } else {
+                    throw new Error(posted?.error || "GAS予約送信に失敗しました。");
+                }
+            }
 
-        const posted = await submitToGas({
-            action: "reserveEquipment",
-            type: "equipmentReservation",
-            recordId,
-            applicant: name,
-            phone,
-            group,
-            items: pendingItems.map((item) => ({
-                equipment: item.equipmentLabel,
-                equipmentId: item.equipmentId,
-                quantity: item.quantity,
-                loanDate: item.loanDate,
-                returnDate: item.returnDate
-            })),
-            createdAt
-        });
-
-        reservationItems = [...reservationItems, ...flatRows];
-        if (!posted.ok) {
-            saveReservationItemsLocal(reservationItems);
-            formStatus.textContent = `【通信失敗】URL: ${posted.url} | エラー内容: HTTP=${posted.status || "N/A"} / ${posted.error}`;
-        } else {
-            formStatus.textContent = `送信成功: URL=${posted.url} | HTTP=${posted.status} | ${itemListToLabel(pendingItems)}`;
+            // 成功時のクリーンアップ
+            pendingCart = [];
+            refreshCartUI();
+            reservationItems = await loadReservationItems(config);
+            renderGantt();
+            form.reset();
+        } catch (err) {
+            console.error("[Equipment] 予約エラー:", err);
+            formStatus.textContent = `予約失敗: ${err.message || err}`;
+            formStatus.style.color = "#c0392b";
         }
-
-        pendingItems = [];
-        tapStartDate = "";
-        refreshPendingList();
-        renderGantt();
-        form.reset();
-        formEquipment.value = selectedItem?.label || "";
-        formQuantity.value = "1";
     });
 }
 
+/**
+ * 管理画面用: 予約ステータス更新 (承認 / 貸出 / 返納完了 / 取消)
+ */
+export async function updateReservationStatus(reservationId, newStatus, note = "") {
+    if (!isFirebaseReady || !db) return { ok: false, error: "Firebase未接続" };
+
+    try {
+        const resRef = doc(db, "equipmentReservations", reservationId);
+        await updateDoc(resRef, {
+            status: newStatus,
+            notes: note,
+            updatedAt: new Date()
+        });
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, error: err.message || err };
+    }
+}
+
+/**
+ * 管理画面: 返納アラートと一覧表示
+ */
 export async function initAdminReturnAlerts(config) {
     const alertsRoot = document.getElementById("admin-return-alerts");
     const tableBody = document.getElementById("admin-reservation-table-body");
-    if (!alertsRoot || !tableBody) {
-        return;
-    }
-
-    applySheetLinks(config, {
-        master: "admin-master-sheet-link",
-        reservation: "admin-reservation-sheet-link"
-    });
+    if (!alertsRoot || !tableBody) return;
 
     const today = formatDate(new Date());
-    const reservationItems = await loadReservationItems(config);
+    const reservations = await loadReservationItems(config);
 
-    const dueItems = reservationItems.filter((item) => item.returnDate <= today);
+    // 返納期限が今日以前で、まだ返納完了になっていないもの
+    const dueItems = reservations.filter((r) => r.returnDate <= today && r.status !== "returned" && r.status !== "cancelled");
 
     alertsRoot.innerHTML = "";
     if (dueItems.length === 0) {
@@ -614,22 +598,50 @@ export async function initAdminReturnAlerts(config) {
         dueItems.forEach((item) => {
             const p = document.createElement("p");
             p.className = "admin-alert-item";
-            p.textContent = `予約ID ${item.recordId}（${item.equipmentLabel} x${item.quantity}）の返納日が来ました。`;
+            p.style.color = "#c0392b";
+            p.style.fontWeight = "bold";
+            p.textContent = `⚠️ 【要返納確認】${item.equipmentLabel} x${item.quantity}台（申請者: ${item.applicant || "匿名"}様 / 期限: ${item.returnDate}）`;
             alertsRoot.appendChild(p);
         });
     }
 
     tableBody.innerHTML = "";
-    reservationItems
-        .sort((a, b) => (a.createdAt > b.createdAt ? -1 : 1))
-        .forEach((item) => {
-            const row = document.createElement("tr");
-            row.innerHTML = `
-                <td>${item.equipmentLabel}</td>
-                <td>${item.quantity}</td>
-                <td>${item.loanDate}</td>
-                <td>${item.returnDate}</td>
-            `;
-            tableBody.appendChild(row);
+    reservations.forEach((item) => {
+        const row = document.createElement("tr");
+        const statusMap = {
+            requested: "申請中",
+            approved: "承認済",
+            borrowed: "貸出中",
+            returned: "返納完了",
+            cancelled: "取消"
+        };
+        row.innerHTML = `
+            <td>${item.equipmentLabel}</td>
+            <td>${item.quantity}</td>
+            <td>${item.loanDate} 〜 ${item.returnDate}</td>
+            <td>${item.applicant || "-"}</td>
+            <td><span class="status-badge">${statusMap[item.status] || item.status}</span></td>
+            <td>
+                ${item.status === 'requested' ? `<button class="button" data-act="approve" data-id="${item.recordId}" style="padding:2px 8px;font-size:0.8rem;">承認</button>` : ''}
+                ${item.status === 'approved' ? `<button class="button" data-act="borrow" data-id="${item.recordId}" style="padding:2px 8px;font-size:0.8rem;background:#2980b9;">貸出</button>` : ''}
+                ${item.status === 'borrowed' ? `<button class="button" data-act="return" data-id="${item.recordId}" style="padding:2px 8px;font-size:0.8rem;background:#247246;">返納確認</button>` : ''}
+            </td>
+        `;
+
+        row.querySelectorAll("button[data-act]").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+                const act = btn.dataset.act;
+                const id = btn.dataset.id;
+                let nextStatus = "approved";
+                if (act === "borrow") nextStatus = "borrowed";
+                if (act === "return") nextStatus = "returned";
+                btn.disabled = true;
+                btn.textContent = "更新中...";
+                await updateReservationStatus(id, nextStatus);
+                await initAdminReturnAlerts(config);
+            });
         });
+
+        tableBody.appendChild(row);
+    });
 }

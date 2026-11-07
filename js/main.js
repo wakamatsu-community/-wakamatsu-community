@@ -8,6 +8,8 @@ import { initGalleryPage } from "./gallery.js";
 import { initEquipmentPage, initAdminReturnAlerts } from "./equipment.js";
 import { initManagedEventsPage, initAdminCommunityForms, loadAllManagedEvents } from "./community-admin.js";
 import { initOpinionExchangePage, initAdminOpinionExchange } from "./opinion-exchange.js";
+import { db, isFirebaseReady, auth, onAuthStateChanged, getCurrentUserProfile } from "./firebase-init.js";
+import { collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 function setupNavigation() {
     const current = location.pathname.split("/").pop() || "index.html";
@@ -22,13 +24,32 @@ function setupNavigation() {
 
     const toggle = document.querySelector(".menu-toggle");
     const nav = document.querySelector(".global-nav");
-    if (!toggle || !nav) {
-        return;
+    if (toggle && nav) {
+        toggle.addEventListener("click", () => {
+            nav.classList.toggle("open");
+        });
     }
 
-    toggle.addEventListener("click", () => {
-        nav.classList.toggle("open");
-    });
+    // Firebase ログイン状態の監視とナビ表示更新
+    if (isFirebaseReady && auth) {
+        onAuthStateChanged(auth, async (user) => {
+            const authPills = document.querySelectorAll(".auth-pill, #nav-auth-link");
+            if (user) {
+                const profile = await getCurrentUserProfile();
+                const displayName = profile?.name || user.displayName || user.email || "会員";
+                const roleBadge = profile?.role === "officer" ? "（役員）" : "";
+                authPills.forEach((el) => {
+                    el.textContent = `👤 ${displayName}${roleBadge}`;
+                    el.setAttribute("href", "admin.html");
+                });
+            } else {
+                authPills.forEach((el) => {
+                    el.textContent = "ログイン";
+                    el.setAttribute("href", "admin.html");
+                });
+            }
+        });
+    }
 }
 
 function isCommunityEvent(event) {
@@ -92,6 +113,31 @@ function normalizeTownEventForHome(event) {
 }
 
 async function loadTownEventsForHome() {
+    // 1. Firestore からの取得を優先
+    if (isFirebaseReady && db) {
+        try {
+            const snap = await getDocs(collection(db, "events"));
+            const events = [];
+            snap.forEach((docSnap) => {
+                const d = docSnap.data();
+                const startStr = d.start && typeof d.start.toDate === "function" ? d.start.toDate().toISOString() : String(d.start || "");
+                events.push(normalizeTownEventForHome({
+                    id: docSnap.id,
+                    title: d.title,
+                    start: startStr,
+                    place: d.place,
+                    description: d.description
+                }));
+            });
+            if (events.length > 0) {
+                return events.filter((e) => e.title && e.date);
+            }
+        } catch (err) {
+            console.warn("[Home] Firestore 取得エラー (GASへフォールバック):", err);
+        }
+    }
+
+    // 2. GAS フォールバック
     try {
         const response = await gasGet({ action: "getTownEvents" });
         const rows = Array.isArray(response?.data) ? response.data : [];

@@ -6,6 +6,7 @@
  */
 
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
+import { auth, isFirebaseReady } from "./firebase-init.js";
 
 function createDriveFileUrls(file) {
     const fileId = file.id || "";
@@ -203,18 +204,29 @@ async function uploadPhotosToDrive(config, payload) {
     const requestUrl = getGasUrl();
 
     try {
+        let idToken = "";
+        if (isFirebaseReady && auth?.currentUser) {
+            try {
+                idToken = await auth.currentUser.getIdToken();
+            } catch (tokenErr) {
+                console.warn("[Gallery] IDトークン取得失敗:", tokenErr);
+            }
+        }
+
         let last = null;
         for (const file of payload.files) {
-            const fileData = await fileToDataUrl(file);
+            // スマホ写真を自動で最大1200px / JPEG品質0.8に圧縮して容量超過・タイムアウトを防止
+            const fileData = await compressImageFile(file, 1200, 0.8);
             last = await gasPost({
                 action: "uploadPhoto",
-                fileName: file.name,
-                mimeType: file.type || "image/jpeg",
+                fileName: file.name.replace(/\.[^/.]+$/, ".jpg"),
+                mimeType: "image/jpeg",
                 photoData: fileData,
                 folderId: payload.folderId,
                 uploaderName: payload.uploaderName,
                 comment: payload.comment,
-                album: payload.folderId
+                album: payload.folderId,
+                idToken: idToken
             });
 
             const hasBusinessError = last && (
@@ -254,6 +266,50 @@ function fileToDataUrl(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("ファイル読み込みに失敗しました。"));
+        reader.readAsDataURL(file);
+    });
+}
+
+/**
+ * スマートフォン等の大容量写真をCanvasで最大1200pxに自動縮小・JPEG圧縮する
+ */
+function compressImageFile(file, maxDimension = 1200, quality = 0.8) {
+    return new Promise((resolve, reject) => {
+        if (!file.type || !file.type.startsWith("image/")) {
+            return fileToDataUrl(file).then(resolve).catch(reject);
+        }
+
+        const img = new Image();
+        const reader = new FileReader();
+
+        reader.onload = (e) => {
+            img.onload = () => {
+                let width = img.width;
+                let height = img.height;
+
+                if (width > maxDimension || height > maxDimension) {
+                    if (width > height) {
+                        height = Math.round((height * maxDimension) / width);
+                        width = maxDimension;
+                    } else {
+                        width = Math.round((width * maxDimension) / height);
+                        height = maxDimension;
+                    }
+                }
+
+                const canvas = document.createElement("canvas");
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext("2d");
+                ctx.drawImage(img, 0, 0, width, height);
+
+                const compressedDataUrl = canvas.toDataURL("image/jpeg", quality);
+                resolve(compressedDataUrl);
+            };
+            img.onerror = () => reject(new Error("画像読み込みに失敗しました。"));
+            img.src = String(e.target?.result || "");
+        };
         reader.onerror = () => reject(new Error("ファイル読み込みに失敗しました。"));
         reader.readAsDataURL(file);
     });
@@ -340,6 +396,11 @@ function bindGalleryUploadForm(config, onUploaded) {
         const newFolderName = String(fd.get("newFolderName") || "").trim();
         const comment = String(fd.get("comment") || "").trim();
         const files = (fd.getAll("photos") || []).filter((f) => f instanceof File && f.size > 0);
+
+        if (isFirebaseReady && !auth?.currentUser) {
+            status.textContent = "写真の投稿には会員ログインが必要です。ログインしてから再度お試しください。";
+            return;
+        }
 
         if (!uploaderName || !destination || files.length === 0) {
             status.textContent = "投稿者名・保存先・写真ファイルを入力してください。";
