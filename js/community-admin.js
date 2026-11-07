@@ -1215,75 +1215,221 @@ function setAdminPanelsVisible(isVisible) {
     });
 }
 
+// 要件4: GASの旧login認証フォールバックの段階的廃止 (Firebase一本化)
+const ENABLE_LEGACY_GAS_LOGIN_FALLBACK = false;
+
 function bindAdminLogin() {
-    const form = document.getElementById("admin-login-form");
+    const memberForm = document.getElementById("member-passcode-form");
+    const officerForm = document.getElementById("admin-login-form");
     const status = document.getElementById("admin-login-status");
     const currentRole = document.getElementById("admin-current-role");
+    const loggedInPanel = document.getElementById("logged-in-panel");
+    const logoutBtn = document.getElementById("auth-logout-btn");
+    const pwChangeToggle = document.getElementById("auth-password-change-toggle");
+    const pwChangeForm = document.getElementById("auth-password-change-form");
+    const pwChangeStatus = document.getElementById("auth-password-change-status");
 
-    if (!form || !status) {
+    const tabMember = document.getElementById("tab-member-auth");
+    const tabOfficer = document.getElementById("tab-officer-auth");
+
+    if (!officerForm || !status) {
         return;
     }
 
     setAdminPanelsVisible(false);
 
-    form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const fd = new FormData(form);
-        const userId = String(fd.get("userId") || "").trim();
-        const pin = String(fd.get("pin") || "").trim();
+    // 1. タブ切り替え制御
+    if (tabMember && tabOfficer) {
+        tabMember.addEventListener("click", () => {
+            tabMember.classList.add("active");
+            tabMember.style.background = "";
+            tabOfficer.classList.remove("active");
+            tabOfficer.style.background = "#5f6f68";
+            if (memberForm) memberForm.classList.remove("hidden");
+            officerForm.classList.add("hidden");
+        });
+        tabOfficer.addEventListener("click", () => {
+            tabOfficer.classList.add("active");
+            tabOfficer.style.background = "";
+            tabMember.classList.remove("active");
+            tabMember.style.background = "#5f6f68";
+            officerForm.classList.remove("hidden");
+            if (memberForm) memberForm.classList.add("hidden");
+        });
+    }
 
-        status.textContent = "ログイン認証中...";
+    // ログイン状態反映ヘルパー
+    const updateUiForProfile = (profile) => {
+        if (!profile) {
+            setAdminPanelsVisible(false);
+            if (loggedInPanel) loggedInPanel.classList.add("hidden");
+            if (memberForm) memberForm.classList.remove("hidden");
+            officerForm.classList.add("hidden");
+            if (tabMember) tabMember.click();
+            return;
+        }
+
+        if (loggedInPanel) loggedInPanel.classList.remove("hidden");
+        if (memberForm) memberForm.classList.add("hidden");
+        officerForm.classList.add("hidden");
+
+        const roleLabel = profile.isAdmin ? "システム管理者" : (profile.isOfficer ? "役員" : "町内会員 (閲覧専用)");
+        if (currentRole) {
+            currentRole.textContent = `👤 ログイン中: ${profile.name} 【${roleLabel}】`;
+        }
+
+        // 要件6: 共通会員は管理操作パネルを非表示 (閲覧専用)
+        if (profile.canManage) {
+            setAdminPanelsVisible(true);
+            setStatusText(status, `ログイン成功: ${roleLabel}権限が確認されました。管理操作が可能です。`);
+            if (pwChangeToggle) pwChangeToggle.classList.remove("hidden");
+        } else {
+            setAdminPanelsVisible(false);
+            setStatusText(status, `会員合言葉認証完了: 会員限定の行事予定・資料室の閲覧が可能です（管理操作は役員専用）。`);
+            if (pwChangeToggle) pwChangeToggle.classList.add("hidden");
+        }
+    };
+
+    // 2. 既存セッションの初期監視 (Firebase Auth)
+    if (isFirebaseReady && auth) {
+        import("./firebase-init.js").then(({ onAuthStateChanged, getCurrentUserProfile }) => {
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    const profile = await getCurrentUserProfile();
+                    updateUiForProfile(profile);
+                } else {
+                    updateUiForProfile(null);
+                }
+            });
+        });
+    }
+
+    // 3. 一般会員用: 共通合言葉ログインハンドラ
+    if (memberForm) {
+        memberForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const fd = new FormData(memberForm);
+            const passcode = String(fd.get("passcode") || "").trim();
+
+            status.textContent = "合言葉をサーバー側で検証中...";
+            status.style.color = "";
+
+            try {
+                const { signInWithMemberPasscode, getCurrentUserProfile } = await import("./firebase-init.js");
+                const res = await signInWithMemberPasscode(passcode);
+                if (res.ok) {
+                    const profile = await getCurrentUserProfile();
+                    updateUiForProfile(profile);
+                } else {
+                    setStatusText(status, res.message || "合言葉が正しくありません。", true);
+                }
+            } catch (err) {
+                setStatusText(status, `認証エラー: ${err.message}`, true);
+            }
+        });
+    }
+
+    // 4. 役員・管理者用: 個別ログインハンドラ
+    officerForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const fd = new FormData(officerForm);
+        const email = String(fd.get("email") || fd.get("userId") || "").trim();
+        const password = String(fd.get("password") || fd.get("pin") || "").trim();
+
+        status.textContent = "役員アカウントを認証中...";
         status.style.color = "";
 
-        // 1. Firebase Authentication による認証を優先試行
+        // 1. Firebase Authentication による認証 (正規の一本化経路)
         if (isFirebaseReady && auth) {
             try {
-                const email = userId.includes("@") ? userId : `${userId}@wakamatsu-community.local`;
-                const userCredential = await signInWithEmailAndPassword(auth, email, pin);
-                const profile = await getCurrentUserProfile();
+                const { signInWithOfficerCredentials } = await import("./firebase-init.js");
+                const loginRes = await signInWithOfficerCredentials(email, password);
 
-                if (profile && profile.role === "officer") {
-                    setAdminPanelsVisible(true);
-                    setStatusText(status, `Firebaseログイン成功（役員権限）: ${profile.name}`);
-                    if (currentRole) {
-                        currentRole.textContent = `ログイン中: ${profile.name}（役員）`;
+                if (loginRes.ok) {
+                    if (loginRes.warning) {
+                        setStatusText(status, loginRes.warning, true);
                     }
+                    updateUiForProfile(loginRes.profile);
                     return;
+                } else {
+                    setStatusText(status, loginRes.message || "認証に失敗しました。", true);
+                    if (!ENABLE_LEGACY_GAS_LOGIN_FALLBACK) {
+                        return;
+                    }
                 }
             } catch (fbErr) {
-                console.warn("[AdminLogin] Firebase ログイン試行失敗、GASへフォールバック:", fbErr);
+                console.warn("[AdminLogin] Firebase ログイン例外:", fbErr);
+                if (!ENABLE_LEGACY_GAS_LOGIN_FALLBACK) {
+                    setStatusText(status, `Firebase認証エラー: ${fbErr.message}`, true);
+                    return;
+                }
             }
         }
 
-        // 2. GAS Web App へのフォールバック認証
-        const payload = {
-            action: "login",
-            userId,
-            pin
-        };
+        // 2. GAS Web App へのフォールバック (移行期間の緊急時用、デフォルト無効)
+        if (ENABLE_LEGACY_GAS_LOGIN_FALLBACK) {
+            const payload = {
+                action: "login",
+                userId: email,
+                pin: password
+            };
 
-        const result = await postToGas(payload);
-        if (!result.ok) {
-            setAdminPanelsVisible(false);
-            setCommFailureStatus(status, result);
-            return;
-        }
+            const result = await postToGas(payload);
+            if (!result.ok) {
+                setAdminPanelsVisible(false);
+                setCommFailureStatus(status, result);
+                return;
+            }
 
-        const loginResult = result?.response?.data || result?.response || {};
-        const isOfficer = String(loginResult?.role || "") === "役員";
-        if (!isOfficer || loginResult?.success === false) {
-            setAdminPanelsVisible(false);
-            const message = String(loginResult?.error || loginResult?.message || "役員アカウントのみ利用できます。");
-            setStatusText(status, `【通信失敗】URL: ${result.url} | エラー内容: HTTP=${result.status || "N/A"} / ${message}`, true);
-            return;
-        }
+            const loginResult = result?.response?.data || result?.response || {};
+            const isOfficer = String(loginResult?.role || "") === "役員";
+            if (!isOfficer || loginResult?.success === false) {
+                setAdminPanelsVisible(false);
+                const message = String(loginResult?.error || loginResult?.message || "役員アカウントのみ利用できます。");
+                setStatusText(status, `【通信失敗】URL: ${result.url} | エラー内容: ${message}`, true);
+                return;
+            }
 
-        setAdminPanelsVisible(true);
-        setStatusText(status, `ログイン成功: URL=${result.url} | HTTP=${result.status}`);
-        if (currentRole) {
-            currentRole.textContent = `ログイン中: ${String(loginResult?.name || "") || payload.userId}（${String(loginResult?.role || "") || "役員"}）`;
+            setAdminPanelsVisible(true);
+            setStatusText(status, `[旧GAS認証] ログイン成功: ${String(loginResult?.name || email)}（役員）`);
+            if (currentRole) {
+                currentRole.textContent = `ログイン中: ${String(loginResult?.name || email)}（役員）`;
+            }
         }
     });
+
+    // 5. ログアウト処理
+    if (logoutBtn) {
+        logoutBtn.addEventListener("click", async () => {
+            const { signOutUser } = await import("./firebase-init.js");
+            await signOutUser();
+            updateUiForProfile(null);
+            setStatusText(status, "ログアウトしました。");
+        });
+    }
+
+    // 6. パスワード変更トグル & フォーム
+    if (pwChangeToggle && pwChangeForm) {
+        pwChangeToggle.addEventListener("click", () => {
+            pwChangeForm.classList.toggle("hidden");
+        });
+        pwChangeForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const fd = new FormData(pwChangeForm);
+            const newPassword = String(fd.get("newPassword") || "").trim();
+            if (pwChangeStatus) pwChangeStatus.textContent = "パスワード変更中...";
+
+            const { updateUserPassword } = await import("./firebase-init.js");
+            const res = await updateUserPassword(newPassword);
+            if (pwChangeStatus) {
+                setStatusText(pwChangeStatus, res.message, !res.ok);
+            }
+            if (res.ok) {
+                pwChangeForm.reset();
+                setTimeout(() => pwChangeForm.classList.add("hidden"), 2000);
+            }
+        });
+    }
 }
 
 function bindAdminCalendarCreateFormStandalone(config) {
