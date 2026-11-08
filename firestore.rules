@@ -3,12 +3,13 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ==========================================
-    // 1. 認証・ロール判定ヘルパー関数
+    // 1. 認証・ロール判定ヘルパー関数 (B方式)
+    // 要件4: Firestore users/{uid}.role を唯一の権限判定元とする。
     // ==========================================
 
-    // 認証済みか (ログインしているか)
+    // 認証済みか (Firebase Authentication トークンを所持)
     function isAuthenticated() {
-      return request.auth != null;
+      return request.auth != null && request.auth.uid != null;
     }
 
     // users コレクションにプロファイルが存在するか
@@ -32,7 +33,7 @@ service cloud.firestore {
       return hasUserDoc() && (getUserRole() == 'officer' || getUserRole() == 'admin');
     }
 
-    // 会員 (member, officer, admin) 判定
+    // 正当な町内会員 (member, officer, admin) 判定
     function isMember() {
       return hasUserDoc() && (
         getUserRole() == 'member' ||
@@ -47,11 +48,11 @@ service cloud.firestore {
     }
 
     // ==========================================
-    // 2. コレクション別アクセス制御ルール
+    // 2. コレクション別アクセス制御ルール (B方式: 全業務データ認証限定)
     // ==========================================
 
     // 1. 会員プロファイル (users)
-    // 要件3: usersコレクションのroleを認可に使用
+    // 要件3 & 4: users/{uid}.role を認可に使用
     // - 他人のプロファイル閲覧は禁止 (本人のみ閲覧可、管理者は監査可能)
     // - 本人によるrole変更は禁止 (role値の一致を検証)
     // - roleの変更・新規付与・削除は管理者(admin)のみ可能
@@ -63,36 +64,35 @@ service cloud.firestore {
     }
 
     // 2. 町内会公式行事 (events)
-    // 要件4 & 5:
-    // - 一般公開行事は誰でも閲覧可 (未ログイン含む)
-    // - 会員限定行事 (isRestricted == true) は認証済み会員のみ閲覧可
-    // - 行事の作成・変更・削除は役員・管理者のみ (一般会員は閲覧専用)
+    // 要件1 & 5: 未ログイン閲覧不可。認証済み会員に限定
+    // - 認証済み会員: status が published の行事を閲覧可
+    // - 役員・管理者: 下書き(draft)含む全件閲覧可
+    // - 作成・変更・削除は役員・管理者のみ (一般会員は閲覧専用)
     match /events/{eventId} {
-      allow read: if (resource.data.status == 'published' && (!('isRestricted' in resource.data) || resource.data.isRestricted != true))
-                  || (isMember() && resource.data.status == 'published')
+      allow read: if (isMember() && resource.data.status == 'published')
                   || isOfficer();
       allow write: if isOfficer();
     }
 
     // 3. 会員企画イベント (communityEvents)
-    // - 承認済み一般公開行事は誰でも閲覧可
-    // - 会員限定行事は認証済み会員のみ閲覧可
-    // - 企画申請は認証済み会員のみ許可 (status == 'pending')
-    // - 企画者は pending 中のみ更新可。承認後は役員のみ編集可
-    // - 削除は役員のみ
+    // 要件1, 5, 11:
+    // - 閲覧: 承認済み(approved)行事は全会員閲覧可。承認待ちは企画者本人と役員のみ
+    // - 企画申請: 認証会員のみ許可。organizerUidの偽装禁止、初期statusは必ずpending
+    // - 更新: 役員、または企画者本人(pending中のみ)
+    // - 削除: 役員のみ
     match /communityEvents/{eventId} {
-      allow read: if (resource.data.status == 'approved' && (!('isRestricted' in resource.data) || resource.data.isRestricted != true))
-                  || (isMember() && resource.data.status == 'approved')
+      allow read: if (isMember() && resource.data.status == 'approved')
                   || (isAuthenticated() && resource.data.organizerUid == request.auth.uid)
                   || isOfficer();
-      allow create: if isMember() && request.resource.data.status == 'pending';
+      allow create: if isMember() &&
+                    request.resource.data.organizerUid == request.auth.uid &&
+                    request.resource.data.status == 'pending';
       allow update: if isOfficer() ||
                     (isAuthenticated() && resource.data.organizerUid == request.auth.uid && resource.data.status == 'pending');
       allow delete: if isOfficer();
 
       // サブコレクション: 参加者台帳 (entries) - 個人情報保護
-      // - 氏名・連絡先を含むため、他人の台帳閲覧は完全遮断
-      // - 参加者は自身の申込のみ読み書き可能。役員は台帳全体を閲覧可
+      // 要件11: 他人のUIDでのなりすまし参加申込を遮断。他人の台帳閲覧を完全遮断
       match /entries/{entryId} {
         allow read: if isOfficer() ||
                     (isAuthenticated() && resource.data.uid == request.auth.uid);
@@ -109,58 +109,58 @@ service cloud.firestore {
     }
 
     // 5. 回覧板・資料室 (documents)
-    // 要件4: 会員限定資料 (総会資料、規約、名簿等) は未認証第三者を遮断し、認証会員のみ閲覧可
-    // - 一般公開資料は誰でも閲覧可
+    // 要件1 & 5: 未ログインは全資料閲覧不可。認証済み会員に限定
     // - 作成・更新・削除は役員・管理者のみ
     match /documents/{docId} {
-      allow read: if (!('isRestricted' in resource.data) || resource.data.isRestricted != true)
-                  || isMember();
+      allow read: if isMember();
       allow write: if isOfficer();
     }
 
     // 6. 写真アルバム (photos)
-    // 肖像権・プライバシー保護:
-    // - 承認済み公開写真は誰でも閲覧可
-    // - 会員限定写真は認証会員のみ閲覧可
-    // - 投稿申請 (status == 'pending') は認証会員のみ
-    // - 承認・削除は役員・管理者のみ
+    // 要件1 & 5: 肖像権保護。未ログイン閲覧不可。認証済み会員に限定
+    // - 閲覧: 承認済み写真は全会員閲覧可
+    // - 投稿申請: 認証会員のみ許可 (status == 'pending')
+    // - 承認・削除: 役員・管理者のみ
     match /photos/{photoId} {
-      allow read: if (resource.data.status == 'approved' && (!('isRestricted' in resource.data) || resource.data.isRestricted != true))
-                  || (isMember() && resource.data.status == 'approved')
+      allow read: if (isMember() && resource.data.status == 'approved')
                   || isOfficer();
       allow create: if isMember() && request.resource.data.status == 'pending';
       allow update, delete: if isOfficer();
     }
 
     // 7. 備品マスタ (equipmentMaster)
-    // 備品仕様・在庫数は誰でも閲覧可。更新は役員・管理者のみ
+    // 要件1: 認証済み会員のみ閲覧可。更新は役員・管理者のみ
     match /equipmentMaster/{equipmentId} {
-      allow read: if true;
+      allow read: if isMember();
       allow write: if isOfficer();
     }
 
     // 8. 備品予約台帳 (equipmentReservations)
-    // - 空き状況カレンダー表示のため読み取りは許可
-    // - 予約申請は status == 'requested' のみ許可
-    // - 承認・貸出・返納完了等のステータス更新は役員・管理者のみ
+    // 要件1, 5, 11:
+    // - 閲覧: 空き状況確認のため認証済み会員に限定して読み取り許可
+    // - 予約申請: 認証会員のみ許可。userUid偽装禁止、statusは必ずrequested
+    // - 更新: 役員、または予約者本人(statusをcancelledへ変更する取消のみ許可)
+    // - 削除: 役員・管理者のみ
     match /equipmentReservations/{reservationId} {
-      allow read: if true;
-      allow create: if request.resource.data.status == 'requested';
+      allow read: if isMember();
+      allow create: if isMember() &&
+                    request.resource.data.userUid == request.auth.uid &&
+                    request.resource.data.status == 'requested';
       allow update: if isOfficer() ||
                     (isAuthenticated() && resource.data.userUid == request.auth.uid && request.resource.data.status == 'cancelled');
       allow delete: if isOfficer();
     }
 
     // 9. 意見交換・相談 (opinions)
-    // - 公開設定の意見は誰でも閲覧可
-    // - 非公開相談は投稿者本人または役員のみ閲覧可
-    // - 送信は誰でも可能
-    // - 回答記入・ステータス更新は役員・管理者のみ
+    // 要件1, 5, 11:
+    // - 閲覧: 公開意見は全会員閲覧可。非公開相談は本人または役員のみ
+    // - 送信: 認証会員のみ許可。userUid偽装禁止
+    // - 回答記入・ステータス更新: 役員・管理者のみ
     match /opinions/{opinionId} {
-      allow read: if resource.data.isPublic == true ||
+      allow read: if (isMember() && resource.data.isPublic == true) ||
                   (isAuthenticated() && resource.data.userUid == request.auth.uid) ||
                   isOfficer();
-      allow create: if true;
+      allow create: if isMember() && request.resource.data.userUid == request.auth.uid;
       allow update, delete: if isOfficer();
     }
 

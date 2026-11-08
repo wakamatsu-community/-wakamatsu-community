@@ -1,12 +1,17 @@
 // scripts/test_security_rules.js
 /**
- * Firestore Security Rules & ユーザーID認証アクセス制御マトリクス総合検証テスト
+ * Firestore Security Rules & ユーザーID認証アクセス制御マトリクス総合検証テスト (B方式)
+ *
+ * 要件1: 町内会HPの全業務データをFirebase Authentication認証済み会員に限定する。
+ * 要件2: 未ログインでは全業務データへのアクセスを遮断しログイン画面だけを表示する。
+ * 要件4: Firestore users/{uid}.role を唯一の権限判定元とする。メールアドレスによるロール推定を排除。
+ * 要件11: 予約・企画申請・意見投稿で所有者UID、ステータス、管理用フィールドを不正変更できないようにする。
  *
  * 検証対象 4区分:
  *   1. 未ログイン (guest)
- *   2. 一般会員 (member)   - username=member, role=member (閲覧専用)
- *   3. 役員 (officer)       - username=officer, role=officer (行事・資料・写真・備品管理)
- *   4. システム管理者 (niina) - username=niina, role=admin (特権管理・ユーザーロール監査)
+ *   2. 一般会員 (member)     - username=member, role=member (閲覧専用)
+ *   3. 役員 (officer)         - username=officer, role=officer (行事・資料・写真・備品管理)
+ *   4. システム管理者 (niina)   - username=niina, role=admin (特権管理・ロール監査)
  */
 
 const fs = require('fs');
@@ -21,7 +26,7 @@ vm.createContext(sandbox);
 vm.runInContext(cjsCode, sandbox);
 const AUTH_USER_MAP = sandbox.exports.AUTH_USER_MAP;
 
-console.log('=== Firestore Security Rules & ユーザーID認可 総合検証テスト開始 ===\n');
+console.log('=== Firestore Security Rules B方式 (全業務データ完全認証制) 総合検証テスト開始 ===\n');
 
 // -------------------------------------------------------------
 // 1. ユーザーID解決 (resolveEmailFromUserId) テスト
@@ -36,13 +41,13 @@ function resolveEmail(userId) {
 
 const idMappingTests = [
     { input: 'niina', expected: 'niina@wakamatsu-cho.internal' },
-    { input: 'NIINA ', expected: 'niina@wakamatsu-cho.internal' }, // 大文字・空白正規化
+    { input: 'NIINA ', expected: 'niina@wakamatsu-cho.internal' },
     { input: 'officer', expected: 'officer@wakamatsu-cho.internal' },
     { input: 'OFFICER', expected: 'officer@wakamatsu-cho.internal' },
     { input: 'member', expected: 'member@wakamatsu-cho.internal' },
     { input: 'MEMBER ', expected: 'member@wakamatsu-cho.internal' },
-    { input: 'admin@example.com', expected: 'admin@example.com' }, // 直接メール入力互換
-    { input: 'unknown_user', expected: null } // 未登録ID
+    { input: 'admin@example.com', expected: 'admin@example.com' },
+    { input: 'unknown_user', expected: null }
 ];
 
 idMappingTests.forEach(({ input, expected }) => {
@@ -53,9 +58,9 @@ idMappingTests.forEach(({ input, expected }) => {
 });
 
 // -------------------------------------------------------------
-// 2. Firestore Security Rules エミュレータ関数
+// 2. B方式 Firestore Security Rules エミュレータ関数
 // -------------------------------------------------------------
-console.log('\n--- 2. Firestore Security Rules 4区分アクセス制御マトリクステスト ---');
+console.log('\n--- 2. B方式 Firestore Security Rules 4区分アクセス制御マトリクステスト ---');
 
 // モックデータベース (usersコレクションの登録状態)
 const mockDatabase = {
@@ -66,16 +71,17 @@ const mockDatabase = {
     }
 };
 
-function evaluateRule(ruleContext) {
+function evaluateRuleB(ruleContext) {
     const { auth, resource, requestResource, path: docPath, method } = ruleContext;
 
-    // ヘルパー関数群 (firestore.rules のロジックと厳密に一致)
+    // ヘルパー関数群 (B方式 firestore.rules と厳密一致)
     const isAuthenticated = auth !== null && auth.uid != null;
 
     function hasUserDoc() {
         return isAuthenticated && Boolean(mockDatabase.users[auth.uid]);
     }
 
+    // 要件4: users/{uid}.role のみを厳密参照
     function getUserRole() {
         return hasUserDoc() ? mockDatabase.users[auth.uid].role : null;
     }
@@ -84,6 +90,9 @@ function evaluateRule(ruleContext) {
     const isOfficer = hasUserDoc() && (getUserRole() === 'officer' || getUserRole() === 'admin');
     const isMember = hasUserDoc() && (getUserRole() === 'member' || getUserRole() === 'officer' || getUserRole() === 'admin');
     const isOwner = (uid) => isAuthenticated && auth.uid === uid;
+
+    // 要件1 & 2: 未認証(未ログインまたはusers未登録)は全コレクションで読み書き不可
+    if (!isAuthenticated) return false;
 
     // 1. 会員プロファイル (users/{userId})
     if (docPath.startsWith('users/')) {
@@ -102,12 +111,13 @@ function evaluateRule(ruleContext) {
         }
     }
 
+    // 正当な会員登録(users)がない場合は後続コレクションへのアクセス不可
+    if (!isMember) return false;
+
     // 2. 町内会公式行事 (events/{eventId})
     if (docPath.startsWith('events/')) {
         if (method === 'read') {
-            const isRestricted = resource?.data?.isRestricted === true;
             const isPublished = resource?.data?.status === 'published';
-            if (isPublished && !isRestricted) return true;
             if (isMember && isPublished) return true;
             if (isOfficer) return true;
             return false;
@@ -133,16 +143,16 @@ function evaluateRule(ruleContext) {
         }
 
         if (method === 'read') {
-            const isRestricted = resource?.data?.isRestricted === true;
             const isApproved = resource?.data?.status === 'approved';
-            if (isApproved && !isRestricted) return true;
             if (isMember && isApproved) return true;
             if (isAuthenticated && resource?.data?.organizerUid === auth.uid) return true;
             if (isOfficer) return true;
             return false;
         }
         if (method === 'create') {
-            return isMember && requestResource?.data?.status === 'pending';
+            return isMember &&
+                   requestResource?.data?.organizerUid === auth.uid &&
+                   requestResource?.data?.status === 'pending';
         }
         if (method === 'update') {
             return isOfficer || (isAuthenticated && resource?.data?.organizerUid === auth.uid && resource?.data?.status === 'pending');
@@ -160,8 +170,6 @@ function evaluateRule(ruleContext) {
     // 5. 回覧板・資料室 (documents/{docId})
     if (docPath.startsWith('documents/')) {
         if (method === 'read') {
-            const isRestricted = resource?.data?.isRestricted === true;
-            if (!isRestricted) return true;
             return isMember;
         }
         if (method === 'create' || method === 'update' || method === 'delete' || method === 'write') {
@@ -172,9 +180,7 @@ function evaluateRule(ruleContext) {
     // 6. 写真アルバム (photos/{photoId})
     if (docPath.startsWith('photos/')) {
         if (method === 'read') {
-            const isRestricted = resource?.data?.isRestricted === true;
             const isApproved = resource?.data?.status === 'approved';
-            if (isApproved && !isRestricted) return true;
             if (isMember && isApproved) return true;
             if (isOfficer) return true;
             return false;
@@ -189,15 +195,17 @@ function evaluateRule(ruleContext) {
 
     // 7. 備品マスタ (equipmentMaster/{equipmentId})
     if (docPath.startsWith('equipmentMaster/')) {
-        if (method === 'read') return true;
+        if (method === 'read') return isMember;
         return isOfficer;
     }
 
     // 8. 備品予約台帳 (equipmentReservations/{reservationId})
     if (docPath.startsWith('equipmentReservations/')) {
-        if (method === 'read') return true;
+        if (method === 'read') return isMember;
         if (method === 'create') {
-            return requestResource?.data?.status === 'requested';
+            return isMember &&
+                   requestResource?.data?.userUid === auth.uid &&
+                   requestResource?.data?.status === 'requested';
         }
         if (method === 'update') {
             return isOfficer || (isAuthenticated && resource?.data?.userUid === auth.uid && requestResource?.data?.status === 'cancelled');
@@ -210,13 +218,13 @@ function evaluateRule(ruleContext) {
     // 9. 意見交換・相談 (opinions/{opinionId})
     if (docPath.startsWith('opinions/')) {
         if (method === 'read') {
-            if (resource?.data?.isPublic === true) return true;
+            if (isMember && resource?.data?.isPublic === true) return true;
             if (isAuthenticated && resource?.data?.userUid === auth.uid) return true;
             if (isOfficer) return true;
             return false;
         }
         if (method === 'create') {
-            return true;
+            return isMember && requestResource?.data?.userUid === auth.uid;
         }
         if (method === 'update' || method === 'delete') {
             return isOfficer;
@@ -228,7 +236,7 @@ function evaluateRule(ruleContext) {
 }
 
 // -------------------------------------------------------------
-// 3. テストマトリクス定義 (4区分 × 各コレクション)
+// 3. B方式 テストマトリクス定義 (未ログイン全拒否 & 3権限の完全分離)
 // -------------------------------------------------------------
 const authGuest = null;
 const authMember = { uid: 'uid_member' };
@@ -237,13 +245,57 @@ const authAdmin = { uid: 'uid_niina' };
 
 const tests = [
     // ==========================================
-    // [1. users コレクション - 要件3]
+    // [要件1 & 2: 未ログイン時の全業務データ完全遮断テスト]
     // ==========================================
     {
-        name: '未ログイン: users ドキュメント参照の拒絶',
-        ctx: { auth: authGuest, path: 'users/uid_member', method: 'read' },
+        name: '未ログイン: 公式行事(events)の閲覧拒絶 (B方式)',
+        ctx: { auth: authGuest, path: 'events/ev1', method: 'read', resource: { data: { status: 'published' } } },
         expected: false
     },
+    {
+        name: '未ログイン: 会員企画(communityEvents)の閲覧拒絶 (B方式)',
+        ctx: { auth: authGuest, path: 'communityEvents/c1', method: 'read', resource: { data: { status: 'approved' } } },
+        expected: false
+    },
+    {
+        name: '未ログイン: 参加者台帳(entries)の閲覧拒絶 (B方式)',
+        ctx: { auth: authGuest, path: 'communityEvents/c1/entries/e1', method: 'read' },
+        expected: false
+    },
+    {
+        name: '未ログイン: 回覧板・資料(documents)の閲覧拒絶 (B方式)',
+        ctx: { auth: authGuest, path: 'documents/doc1', method: 'read' },
+        expected: false
+    },
+    {
+        name: '未ログイン: 写真(photos)の閲覧拒絶 (B方式)',
+        ctx: { auth: authGuest, path: 'photos/ph1', method: 'read', resource: { data: { status: 'approved' } } },
+        expected: false
+    },
+    {
+        name: '未ログイン: 備品マスタ(equipmentMaster)の閲覧拒絶 (B方式)',
+        ctx: { auth: authGuest, path: 'equipmentMaster/tent', method: 'read' },
+        expected: false
+    },
+    {
+        name: '未ログイン: 備品予約台帳(equipmentReservations)の閲覧拒絶 (B方式)',
+        ctx: { auth: authGuest, path: 'equipmentReservations/res1', method: 'read' },
+        expected: false
+    },
+    {
+        name: '未ログイン: 意見交換(opinions)の閲覧拒絶 (B方式)',
+        ctx: { auth: authGuest, path: 'opinions/op1', method: 'read', resource: { data: { isPublic: true } } },
+        expected: false
+    },
+    {
+        name: '未ログイン: 備品予約申請の拒絶 (B方式: ログイン必須)',
+        ctx: { auth: authGuest, path: 'equipmentReservations/res_new', method: 'create', requestResource: { data: { status: 'requested' } } },
+        expected: false
+    },
+
+    // ==========================================
+    // [要件3 & 4: users/{uid}.role 唯一の認可・改ざん防止]
+    // ==========================================
     {
         name: 'member: 自身の users ドキュメント参照許可',
         ctx: { auth: authMember, path: 'users/uid_member', method: 'read' },
@@ -256,12 +308,12 @@ const tests = [
     },
     {
         name: 'member: 自身の role を officer へ自己昇格試行を拒絶 (role改ざん禁止)',
-        ctx: { auth: authMember, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member', username: 'member' } }, requestResource: { data: { role: 'officer', username: 'member' } } },
+        ctx: { auth: authMember, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member' } }, requestResource: { data: { role: 'officer' } } },
         expected: false
     },
     {
         name: 'member: 自身の表示名変更 (role維持) を許可',
-        ctx: { auth: authMember, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member', username: 'member' } }, requestResource: { data: { role: 'member', username: 'member_new' } } },
+        ctx: { auth: authMember, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member', name: '旧名' } }, requestResource: { data: { role: 'member', name: '新名' } } },
         expected: true
     },
     {
@@ -279,108 +331,43 @@ const tests = [
         ctx: { auth: authAdmin, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member' } }, requestResource: { data: { role: 'officer' } } },
         expected: true
     },
-    {
-        name: 'member: ユーザー新規作成の拒絶 (adminのみ)',
-        ctx: { auth: authMember, path: 'users/uid_new', method: 'create', requestResource: { data: { role: 'member' } } },
-        expected: false
-    },
-    {
-        name: 'admin: ユーザー新規作成の許可',
-        ctx: { auth: authAdmin, path: 'users/uid_new', method: 'create', requestResource: { data: { role: 'member' } } },
-        expected: true
-    },
 
     // ==========================================
-    // [2. events (公式行事) - 要件4 & 5]
+    // [要件1, 5, 11: 公式行事・会員企画・台帳の厳格制御]
     // ==========================================
     {
-        name: '未ログイン: 公開公式行事の閲覧許可',
-        ctx: { auth: authGuest, path: 'events/ev1', method: 'read', resource: { data: { status: 'published', isRestricted: false } } },
-        expected: true
-    },
-    {
-        name: '未ログイン: isRestricted未設定の既存公式行事の閲覧許可 (後方互換)',
-        ctx: { auth: authGuest, path: 'events/ev_legacy', method: 'read', resource: { data: { status: 'published' } } },
-        expected: true
-    },
-    {
-        name: '未ログイン: 会員限定行事の閲覧拒絶 (要件4: 会員限定情報保護)',
-        ctx: { auth: authGuest, path: 'events/ev_secret', method: 'read', resource: { data: { status: 'published', isRestricted: true } } },
-        expected: false
-    },
-    {
-        name: '未ログイン: 公式行事の作成拒絶',
-        ctx: { auth: authGuest, path: 'events/ev_new', method: 'create', requestResource: { data: { title: '勝手な行事' } } },
-        expected: false
-    },
-    {
-        name: 'member: 会員限定行事の閲覧許可 (要件4)',
-        ctx: { auth: authMember, path: 'events/ev_secret', method: 'read', resource: { data: { status: 'published', isRestricted: true } } },
+        name: 'member: 公開公式行事(published)の閲覧許可 (B方式)',
+        ctx: { auth: authMember, path: 'events/ev1', method: 'read', resource: { data: { status: 'published' } } },
         expected: true
     },
     {
         name: 'member: 公式行事の作成拒絶 (閲覧専用保護)',
-        ctx: { auth: authMember, path: 'events/ev_new', method: 'create', requestResource: { data: { title: '会員作成行事' } } },
+        ctx: { auth: authMember, path: 'events/ev_new', method: 'create', requestResource: { data: { title: '会員作成' } } },
         expected: false
     },
     {
         name: 'officer: 公式行事の作成許可',
-        ctx: { auth: authOfficer, path: 'events/ev_new', method: 'create', requestResource: { data: { title: '町内清掃', status: 'published' } } },
+        ctx: { auth: authOfficer, path: 'events/ev_new', method: 'create', requestResource: { data: { title: '清掃', status: 'published' } } },
         expected: true
     },
     {
-        name: 'officer: 公式行事(下書き)の閲覧許可',
-        ctx: { auth: authOfficer, path: 'events/ev_draft', method: 'read', resource: { data: { status: 'draft', isRestricted: false } } },
+        name: 'officer: 公式行事(下書きdraft)の閲覧許可',
+        ctx: { auth: authOfficer, path: 'events/ev_draft', method: 'read', resource: { data: { status: 'draft' } } },
         expected: true
     },
     {
-        name: 'officer: 公式行事の削除許可',
-        ctx: { auth: authOfficer, path: 'events/ev1', method: 'delete' },
-        expected: true
-    },
-
-    // ==========================================
-    // [3. communityEvents & entries (会員企画・台帳) - 要件5]
-    // ==========================================
-    {
-        name: '未ログイン: 承認済み公開企画の閲覧許可',
-        ctx: { auth: authGuest, path: 'communityEvents/c1', method: 'read', resource: { data: { status: 'approved', isRestricted: false } } },
+        name: 'member: 企画申請作成 (status=pending, organizerUid=auth.uid) 許可',
+        ctx: { auth: authMember, path: 'communityEvents/c_new', method: 'create', requestResource: { data: { organizerUid: 'uid_member', status: 'pending' } } },
         expected: true
     },
     {
-        name: '未ログイン: 承認待ち企画の閲覧拒絶',
-        ctx: { auth: authGuest, path: 'communityEvents/c_pending', method: 'read', resource: { data: { status: 'pending' } } },
+        name: 'member: 他人のUIDを騙った企画申請の拒絶 (要件11: organizerUid偽装禁止)',
+        ctx: { auth: authMember, path: 'communityEvents/c_new', method: 'create', requestResource: { data: { organizerUid: 'uid_other', status: 'pending' } } },
         expected: false
     },
     {
-        name: 'member: 新規企画の申請許可 (status=pending)',
-        ctx: { auth: authMember, path: 'communityEvents/c_new', method: 'create', requestResource: { data: { title: '将棋クラブ', status: 'pending' } } },
-        expected: true
-    },
-    {
-        name: 'member: 新規企画を勝手にapprovedで作成するのを拒絶',
-        ctx: { auth: authMember, path: 'communityEvents/c_new', method: 'create', requestResource: { data: { title: '不正企画', status: 'approved' } } },
-        expected: false
-    },
-    {
-        name: 'member: 企画者自身によるpending企画の修正許可',
-        ctx: { auth: authMember, path: 'communityEvents/c1', method: 'update', resource: { data: { organizerUid: 'uid_member', status: 'pending' } } },
-        expected: true
-    },
-    {
-        name: 'member: 他人のpending企画の修正拒絶',
-        ctx: { auth: authMember, path: 'communityEvents/c1', method: 'update', resource: { data: { organizerUid: 'uid_other', status: 'pending' } } },
-        expected: false
-    },
-    {
-        name: 'officer: 企画の承認・更新許可',
-        ctx: { auth: authOfficer, path: 'communityEvents/c1', method: 'update', resource: { data: { status: 'pending' } }, requestResource: { data: { status: 'approved' } } },
-        expected: true
-    },
-    // entries サブコレクション (個人情報保護)
-    {
-        name: '未ログイン: 参加者台帳(entries)の参照拒絶 (個人情報保護)',
-        ctx: { auth: authGuest, path: 'communityEvents/c1/entries/e1', method: 'read' },
+        name: 'member: 勝手にapprovedで企画作成するのを拒絶 (要件11: ステータス不正変更禁止)',
+        ctx: { auth: authMember, path: 'communityEvents/c_new', method: 'create', requestResource: { data: { organizerUid: 'uid_member', status: 'approved' } } },
         expected: false
     },
     {
@@ -389,18 +376,18 @@ const tests = [
         expected: true
     },
     {
-        name: 'member: 他人の参加台帳参照拒絶 (個人情報保護の徹底)',
+        name: 'member: 他人の参加台帳参照拒絶 (個人情報保護)',
         ctx: { auth: authMember, path: 'communityEvents/c1/entries/e2', method: 'read', resource: { data: { uid: 'uid_other' } } },
         expected: false
     },
     {
-        name: 'member: 自身の参加申込登録許可',
-        ctx: { auth: authMember, path: 'communityEvents/c1/entries/e_new', method: 'create', requestResource: { data: { uid: 'uid_member', name: '田中' } } },
+        name: 'member: 自身の参加申込登録 (uid=auth.uid) 許可',
+        ctx: { auth: authMember, path: 'communityEvents/c1/entries/e_new', method: 'create', requestResource: { data: { uid: 'uid_member' } } },
         expected: true
     },
     {
-        name: 'member: 他人のUIDでのなりすまし参加登録拒絶',
-        ctx: { auth: authMember, path: 'communityEvents/c1/entries/e_fake', method: 'create', requestResource: { data: { uid: 'uid_other', name: '佐藤' } } },
+        name: 'member: 他人のUIDでのなりすまし参加申込拒絶 (要件11)',
+        ctx: { auth: authMember, path: 'communityEvents/c1/entries/e_fake', method: 'create', requestResource: { data: { uid: 'uid_other' } } },
         expected: false
     },
     {
@@ -410,40 +397,11 @@ const tests = [
     },
 
     // ==========================================
-    // [4. eventPlanning (企画検討アーカイブ)]
+    // [要件1, 5, 11: 備品予約・資料・写真・意見交換の厳格制御]
     // ==========================================
     {
-        name: '未ログイン: 企画アーカイブ参照拒絶',
-        ctx: { auth: authGuest, path: 'eventPlanning/p1', method: 'read' },
-        expected: false
-    },
-    {
-        name: 'member: 企画アーカイブ参照拒絶 (役員専用)',
-        ctx: { auth: authMember, path: 'eventPlanning/p1', method: 'read' },
-        expected: false
-    },
-    {
-        name: 'officer: 企画アーカイブ参照・更新許可',
-        ctx: { auth: authOfficer, path: 'eventPlanning/p1', method: 'read' },
-        expected: true
-    },
-
-    // ==========================================
-    // [5. documents (回覧板・資料室) - 要件4]
-    // ==========================================
-    {
-        name: '未ログイン: 一般公開回覧板の参照許可',
-        ctx: { auth: authGuest, path: 'documents/doc_public', method: 'read', resource: { data: { isRestricted: false } } },
-        expected: true
-    },
-    {
-        name: '未ログイン: 会員限定資料(総会資料)の参照拒絶 (要件4)',
-        ctx: { auth: authGuest, path: 'documents/doc_secret', method: 'read', resource: { data: { isRestricted: true } } },
-        expected: false
-    },
-    {
-        name: 'member: 会員限定資料の参照許可 (要件4)',
-        ctx: { auth: authMember, path: 'documents/doc_secret', method: 'read', resource: { data: { isRestricted: true } } },
+        name: 'member: 資料室(documents)の閲覧許可 (B方式)',
+        ctx: { auth: authMember, path: 'documents/doc1', method: 'read' },
         expected: true
     },
     {
@@ -453,107 +411,61 @@ const tests = [
     },
     {
         name: 'officer: 資料アップロード許可',
-        ctx: { auth: authOfficer, path: 'documents/doc_new', method: 'create', requestResource: { data: { title: '令和8年総会資料' } } },
-        expected: true
-    },
-
-    // ==========================================
-    // [6. photos (写真アルバム)]
-    // ==========================================
-    {
-        name: '未ログイン: 承認済み公開写真の閲覧許可',
-        ctx: { auth: authGuest, path: 'photos/ph1', method: 'read', resource: { data: { status: 'approved', isRestricted: false } } },
+        ctx: { auth: authOfficer, path: 'documents/doc_new', method: 'create', requestResource: { data: { title: '総会資料' } } },
         expected: true
     },
     {
-        name: '未ログイン: 会員限定写真の閲覧拒絶 (プライバシー保護)',
-        ctx: { auth: authGuest, path: 'photos/ph_restricted', method: 'read', resource: { data: { status: 'approved', isRestricted: true } } },
+        name: 'member: 備品マスタ閲覧許可 (B方式)',
+        ctx: { auth: authMember, path: 'equipmentMaster/tent', method: 'read' },
+        expected: true
+    },
+    {
+        name: 'member: 備品予約申請 (userUid=auth.uid, status=requested) 許可',
+        ctx: { auth: authMember, path: 'equipmentReservations/res_new', method: 'create', requestResource: { data: { userUid: 'uid_member', status: 'requested' } } },
+        expected: true
+    },
+    {
+        name: 'member: 他人のUIDでのなりすまし備品予約の拒絶 (要件11)',
+        ctx: { auth: authMember, path: 'equipmentReservations/res_fake', method: 'create', requestResource: { data: { userUid: 'uid_other', status: 'requested' } } },
         expected: false
     },
     {
-        name: 'member: 会員限定写真の閲覧許可',
-        ctx: { auth: authMember, path: 'photos/ph_restricted', method: 'read', resource: { data: { status: 'approved', isRestricted: true } } },
-        expected: true
-    },
-    {
-        name: 'member: 写真投稿申請許可 (status=pending)',
-        ctx: { auth: authMember, path: 'photos/ph_new', method: 'create', requestResource: { data: { status: 'pending', url: 'https://...' } } },
-        expected: true
-    },
-    {
-        name: 'officer: 写真の承認・削除許可',
-        ctx: { auth: authOfficer, path: 'photos/ph1', method: 'update', requestResource: { data: { status: 'approved' } } },
-        expected: true
-    },
-
-    // ==========================================
-    // [7. equipmentMaster & reservations (備品管理)]
-    // ==========================================
-    {
-        name: '未ログイン: 備品マスタ閲覧許可',
-        ctx: { auth: authGuest, path: 'equipmentMaster/tent', method: 'read' },
-        expected: true
-    },
-    {
-        name: '未ログイン: 備品予約台帳の閲覧許可 (カレンダー空き確認)',
-        ctx: { auth: authGuest, path: 'equipmentReservations/res1', method: 'read' },
-        expected: true
-    },
-    {
-        name: '未ログイン: 備品予約申請許可 (status=requested)',
-        ctx: { auth: authGuest, path: 'equipmentReservations/res_new', method: 'create', requestResource: { data: { status: 'requested', equipmentId: 'tent' } } },
-        expected: true
-    },
-    {
-        name: 'member: 備品予約申請許可 (status=requested)',
-        ctx: { auth: authMember, path: 'equipmentReservations/res_new', method: 'create', requestResource: { data: { status: 'requested', equipmentId: 'tent' } } },
-        expected: true
-    },
-    {
-        name: 'member: 勝手に承認済み(approved)で予約作成するのを拒絶',
-        ctx: { auth: authMember, path: 'equipmentReservations/res_new', method: 'create', requestResource: { data: { status: 'approved', equipmentId: 'tent' } } },
+        name: 'member: 勝手に承認済み(approved)で予約作成するのを拒絶 (要件11)',
+        ctx: { auth: authMember, path: 'equipmentReservations/res_bad', method: 'create', requestResource: { data: { userUid: 'uid_member', status: 'approved' } } },
         expected: false
     },
     {
-        name: 'officer: 予約ステータスの承認更新許可',
+        name: 'member: 自身の予約をキャンセル(cancelled)する更新許可',
+        ctx: { auth: authMember, path: 'equipmentReservations/res1', method: 'update', resource: { data: { userUid: 'uid_member', status: 'requested' } }, requestResource: { data: { status: 'cancelled' } } },
+        expected: true
+    },
+    {
+        name: 'member: 他人の予約の更新拒絶 (要件11)',
+        ctx: { auth: authMember, path: 'equipmentReservations/res2', method: 'update', resource: { data: { userUid: 'uid_other', status: 'requested' } }, requestResource: { data: { status: 'cancelled' } } },
+        expected: false
+    },
+    {
+        name: 'officer: 予約ステータスの承認(approved)更新許可',
         ctx: { auth: authOfficer, path: 'equipmentReservations/res1', method: 'update', requestResource: { data: { status: 'approved' } } },
         expected: true
     },
-
-    // ==========================================
-    // [8. opinions (意見交換)]
-    // ==========================================
     {
-        name: '未ログイン: 公開意見の閲覧許可',
-        ctx: { auth: authGuest, path: 'opinions/op_pub', method: 'read', resource: { data: { isPublic: true } } },
+        name: 'member: 自身の意見送信 (userUid=auth.uid) 許可',
+        ctx: { auth: authMember, path: 'opinions/op_new', method: 'create', requestResource: { data: { userUid: 'uid_member', content: '街灯要望' } } },
         expected: true
     },
     {
-        name: '未ログイン: 非公開相談の閲覧拒絶',
-        ctx: { auth: authGuest, path: 'opinions/op_priv', method: 'read', resource: { data: { isPublic: false } } },
+        name: 'member: 他人のUIDを騙った意見送信の拒絶 (要件11)',
+        ctx: { auth: authMember, path: 'opinions/op_fake', method: 'create', requestResource: { data: { userUid: 'uid_other', content: '偽投稿' } } },
         expected: false
     },
     {
-        name: '未ログイン: 意見・要望の投稿許可',
-        ctx: { auth: authGuest, path: 'opinions/op_new', method: 'create', requestResource: { data: { content: '街灯の要望' } } },
-        expected: true
-    },
-    {
-        name: 'member: 自身の非公開相談の閲覧許可',
-        ctx: { auth: authMember, path: 'opinions/op_priv', method: 'read', resource: { data: { isPublic: false, userUid: 'uid_member' } } },
-        expected: true
-    },
-    {
         name: 'officer: 非公開相談の閲覧および回答更新許可',
-        ctx: { auth: authOfficer, path: 'opinions/op_priv', method: 'update', resource: { data: { isPublic: false } }, requestResource: { data: { reply: '対応完了' } } },
+        ctx: { auth: authOfficer, path: 'opinions/op_priv', method: 'update', resource: { data: { isPublic: false } }, requestResource: { data: { reply: '回答' } } },
         expected: true
     },
-
-    // ==========================================
-    // [9. 未定義コレクション (Default Deny)]
-    // ==========================================
     {
-        name: '全ユーザー: 未定義コレクションへのアクセス拒絶',
+        name: '全ユーザー: 未定義コレクションへのアクセス拒絶 (Default Deny)',
         ctx: { auth: authAdmin, path: 'undefined_collection/doc1', method: 'read' },
         expected: false
     }
@@ -561,7 +473,7 @@ const tests = [
 
 let failed = 0;
 tests.forEach((t, i) => {
-    const result = evaluateRule(t.ctx);
+    const result = evaluateRuleB(t.ctx);
     const pass = result === t.expected;
     const badge = pass ? '[PASS]' : '[FAIL]';
     if (!pass) failed++;
@@ -570,7 +482,7 @@ tests.forEach((t, i) => {
 
 console.log('\n======================================================');
 if (failed === 0) {
-    console.log(`全 ${tests.length} ケースのセキュリティルール検証に完全合格 (ALL PASSED)`);
+    console.log(`全 ${tests.length} ケースのB方式セキュリティルール検証に完全合格 (ALL PASSED)`);
 } else {
     console.error(`${failed} 件のテストが失敗しました`);
     process.exit(1);

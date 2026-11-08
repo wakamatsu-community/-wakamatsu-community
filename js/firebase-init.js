@@ -75,8 +75,10 @@ try {
  * @returns {Promise<{ user: any, role: string, name: string } | null>}
  */
 /**
- * 現在のログインユーザーとロール情報を取得する (要件2, 9, 10: 役員・管理者・共通会員の厳格分離)
- * @returns {Promise<{ user: any, role: string, name: string, isAdmin: boolean, isOfficer: boolean, isCommonMember: boolean, canManage: boolean } | null>}
+ * 現在のログインユーザーとロール情報を取得する
+ * 要件4: Firestore users/{uid}.role を唯一の権限判定元とする。
+ * メールアドレスからadmin/officer権限を推定する処理は完全に排除します。
+ * @returns {Promise<{ user: any, role: string, name: string, isAdmin: boolean, isOfficer: boolean, isMember: boolean, isCommonMember: boolean, canManage: boolean } | null>}
  */
 export async function getCurrentUserProfile() {
     if (!firebaseAuth || !firebaseAuth.currentUser || !firestoreDb) {
@@ -84,67 +86,49 @@ export async function getCurrentUserProfile() {
     }
 
     const user = firebaseAuth.currentUser;
-    const isCommon = Boolean(user.email && user.email.includes("member@"));
 
     try {
         const userDocRef = doc(firestoreDb, "users", user.uid);
         const userDocSnap = await getDoc(userDocRef);
         if (userDocSnap.exists()) {
-            const data = userDocSnap.data();
-            const role = data.role || (isCommon ? "member" : "guest");
+            const data = userDocSnap.data() || {};
+            // users/{uid}.role のみを厳密に参照
+            const role = String(data.role || "guest").trim().toLowerCase();
             const isAdmin = role === "admin";
             const isOfficer = role === "officer" || isAdmin;
+            const isMember = role === "member" || isOfficer;
 
             return {
                 user,
                 uid: user.uid,
                 email: user.email,
                 role,
-                name: data.name || user.displayName || user.email,
+                name: data.name || data.username || user.displayName || user.email,
                 group: data.group || "",
                 isAdmin,
                 isOfficer,
-                isCommonMember: isCommon,
+                isMember,
+                isCommonMember: role === "member",
                 canManage: isOfficer
             };
         }
     } catch (err) {
-        console.warn("[Firebase] ユーザープロファイル取得例外:", err);
+        console.warn("[Firebase] users/{uid} プロファイル照会例外:", err);
     }
 
-    // usersドキュメントが未作成の場合のフォールバック (メールアドレスから安全に初期判定)
-    let fallbackRole = "guest";
-    let fallbackName = user.displayName || user.email;
-    let fallbackIsAdmin = false;
-    let fallbackIsOfficer = false;
-
-    if (user.email) {
-        if (user.email.includes("niina@")) {
-            fallbackRole = "admin";
-            fallbackName = "新名 (システム管理者)";
-            fallbackIsAdmin = true;
-            fallbackIsOfficer = true;
-        } else if (user.email.includes("officer@")) {
-            fallbackRole = "officer";
-            fallbackName = "役員共通アカウント";
-            fallbackIsOfficer = true;
-        } else if (user.email.includes("member@")) {
-            fallbackRole = "member";
-            fallbackName = "町内会員 (閲覧専用)";
-        }
-    }
-
+    // usersドキュメントが存在しない、または未登録の場合は一切の会員・管理権限を与えない (要件4)
     return {
         user,
         uid: user.uid,
         email: user.email,
-        role: fallbackRole,
-        name: fallbackName,
+        role: "guest",
+        name: user.displayName || user.email || "未登録ユーザー",
         group: "",
-        isAdmin: fallbackIsAdmin,
-        isOfficer: fallbackIsOfficer,
-        isCommonMember: isCommon,
-        canManage: fallbackIsOfficer
+        isAdmin: false,
+        isOfficer: false,
+        isMember: false,
+        isCommonMember: false,
+        canManage: false
     };
 }
 
@@ -290,12 +274,19 @@ export async function signInWithOfficerCredentials(email, password) {
 }
 
 /**
- * 要件5: ログアウト処理
+ * 要件10: ログアウト処理 (ローカルキャッシュ完全消去)
  */
 export async function signOutUser() {
     if (!firebaseAuth) return { ok: true };
     try {
         await signOut(firebaseAuth);
+        // 要件10: ブラウザのローカルキャッシュから会員情報・予約台帳を完全消去
+        try {
+            if (typeof localStorage !== "undefined") localStorage.clear();
+            if (typeof sessionStorage !== "undefined") sessionStorage.clear();
+        } catch (storageErr) {
+            console.warn("[Firebase] キャッシュクリア失敗:", storageErr);
+        }
         return { ok: true };
     } catch (err) {
         return { ok: false, error: err };

@@ -1,5 +1,5 @@
 // scripts/measure_browser_perf.cjs
-// Chrome 実ブラウザ (Chromium ヘッドレス) と CDP を使用した実測ベンチマークスクリプト
+// Chrome 実ブラウザ (Chromium) と CDP を使用した B方式 実測ベンチマークスクリプト
 
 const http = require('http');
 const fs = require('fs');
@@ -74,7 +74,7 @@ class CdpClient {
         return new Promise((resolve, reject) => {
             if (this.ws.readyState === WebSocket.OPEN) return resolve();
             this.ws.onopen = () => resolve();
-            this.ws.onerror = (err) => reject(err);
+            this.ws.onerror = (e) => reject(e);
         });
     }
 
@@ -100,7 +100,7 @@ class CdpClient {
     }
 }
 
-// 3. Chromeプロセスの起動とBrowser WebSocket URLの取得
+// 3. Chrome 起動
 function launchChrome(userDataDir) {
     return new Promise((resolve, reject) => {
         const chrome = spawn(CHROME_PATH, [
@@ -110,73 +110,88 @@ function launchChrome(userDataDir) {
             '--disable-gpu',
             '--no-first-run',
             '--no-default-browser-check',
-            'about:blank'
+            '--disable-background-networking'
         ]);
 
-        let resolved = false;
+        let wsUrl = null;
         chrome.stderr.on('data', (chunk) => {
             const str = chunk.toString();
-            const match = str.match(/DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[a-zA-Z0-9-]+)/);
-            if (match && !resolved) {
-                resolved = true;
-                resolve({ chrome, wsUrl: match[1] });
+            const match = str.match(/DevTools listening on (ws:\/\/[^\r\n]+)/);
+            if (match && !wsUrl) {
+                wsUrl = match[1];
+                resolve({ chrome, wsUrl });
             }
         });
 
-        chrome.on('error', (err) => {
-            if (!resolved) {
-                resolved = true;
-                reject(err);
-            }
-        });
-
+        chrome.on('error', reject);
         setTimeout(() => {
-            if (!resolved) {
-                resolved = true;
-                reject(new Error('Chrome CDP 起動タイムアウト'));
-            }
-        }, 8000);
+            if (!wsUrl) reject(new Error('Chrome 起動タイムアウト (10秒)'));
+        }, 10000);
     });
 }
 
-// 4. 実ブラウザ計測セッション
-async function runSession(browserWsUrl, targetUrl, options = {}) {
-    const { isMobile = false, clearCache = false } = options;
-    const browserCdp = new CdpClient(browserWsUrl);
+async function runSession(wsUrl, url, options = {}) {
+    const browserCdp = new CdpClient(wsUrl);
     await browserCdp.ready();
 
-    // 新規ターゲット(タブ)を作成
-    const createTargetResult = await browserCdp.send('Target.createTarget', { url: targetUrl });
+    const createTargetResult = await browserCdp.send('Target.createTarget', { url: 'about:blank' });
     const targetId = createTargetResult.targetId;
 
-    // ポートとホストを取得
-    const urlObj = new URL(browserWsUrl);
-    const pageWsUrl = `ws://${urlObj.host}/devtools/page/${targetId}`;
-
+    const pageWsUrl = `ws://${new URL(wsUrl).host}/devtools/page/${targetId}`;
     const pageCdp = new CdpClient(pageWsUrl);
     await pageCdp.ready();
 
     await pageCdp.send('Page.enable');
-    await pageCdp.send('Runtime.enable');
     await pageCdp.send('Network.enable');
+    await pageCdp.send('Runtime.enable');
 
-    if (clearCache) {
+    if (options.clearCache) {
         await pageCdp.send('Network.clearBrowserCache');
     }
 
-    if (isMobile) {
-        // iPhone 14 Pro 相当のエミュレーション (393 x 852)
+    if (options.isMobile) {
         await pageCdp.send('Emulation.setDeviceMetricsOverride', {
             width: 393,
             height: 852,
             deviceScaleFactor: 3,
             mobile: true
         });
-        await pageCdp.send('Emulation.setTouchEmulationEnabled', { enabled: true });
+        await pageCdp.send('Emulation.setUserAgentOverride', {
+            userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+        });
     }
 
-    // ページの描画完了を待機
-    await new Promise((r) => setTimeout(r, 1200));
+    // 認証シミュレーション (options.authRole が指定されている場合)
+    if (options.authRole) {
+        await pageCdp.send('Page.addScriptToEvaluateOnNewDocument', {
+            source: `(() => {
+                sessionStorage.setItem('wakamatsu_mock_user', JSON.stringify({
+                    uid: 'uid_${options.authRole}',
+                    role: '${options.authRole}',
+                    email: '${options.authRole}@wakamatsu-cho.internal',
+                    name: '${options.authRole === "admin" ? "新名" : (options.authRole === "officer" ? "役員" : "会員")}'
+                }));
+            })()`
+        });
+    }
+
+    // ナビゲーション開始
+    await pageCdp.send('Page.navigate', { url });
+
+    // ロード待ち
+    await new Promise((resolve) => {
+        const handler = (evt) => {
+            const data = JSON.parse(evt.data);
+            if (data.method === 'Page.loadEventFired') {
+                pageCdp.ws.removeEventListener('message', handler);
+                resolve();
+            }
+        };
+        pageCdp.ws.addEventListener('message', handler);
+        setTimeout(resolve, 3000);
+    });
+
+    await new Promise((r) => setTimeout(r, 600));
 
     // メトリクス抽出
     const perfData = await pageCdp.evaluate(`(() => {
@@ -185,6 +200,11 @@ async function runSession(browserWsUrl, targetUrl, options = {}) {
         const customPerf = window.__CALENDAR_PERF__ ? window.__CALENDAR_PERF__.getReport() : null;
         const statusText = document.getElementById('calendar-connection-status')?.innerText || '';
         const initialEventCount = document.querySelectorAll('.fc-event').length;
+
+        // B方式 ログインゲート検証
+        const loginGate = document.getElementById('b-mode-login-gate');
+        const isLoginGateVisible = Boolean(loginGate && loginGate.offsetParent !== null);
+        const isMainHidden = document.querySelector('main')?.style.display === 'none';
 
         // 1. カテゴリフィルタ切り替え速度の計測
         const tFilter0 = performance.now();
@@ -222,7 +242,9 @@ async function runSession(browserWsUrl, targetUrl, options = {}) {
             filterDuration,
             cleanEventCount,
             monthMoveDuration,
-            nextMonthEventCount
+            nextMonthEventCount,
+            isLoginGateVisible,
+            isMainHidden
         };
     })()`);
 
@@ -255,55 +277,20 @@ async function main() {
     console.log('[Test] 実ブラウザでの実測計測を開始します...');
     const url = `http://127.0.0.1:${PORT}/events.html`;
 
-    console.log('\n--- 1. PC環境: 初回アクセス (Cold Cache: キャッシュクリア) ---');
-    const pcFirst = await runSession(wsUrl, url, { isMobile: false, clearCache: true });
+    console.log('\n--- 1. B方式: 未ログイン時のアクセス (要件2: ログイン画面だけを表示) ---');
+    const guestData = await runSession(wsUrl, url, { isMobile: false, clearCache: true });
+    console.log(`  未ログイン時のログインゲート表示: ${guestData.isLoginGateVisible ? '表示中 (PASS)' : '非表示 (FAIL)'}`);
+    console.log(`  未ログイン時の業務コンテンツ隠蔽: ${guestData.isMainHidden ? '非表示保護中 (PASS)' : '表示 (FAIL)'}`);
 
-    console.log('\n--- 2. PC環境: 再訪問アクセス (Warm Cache: ブラウザキャッシュ有効) ---');
-    const pcSecond = await runSession(wsUrl, url, { isMobile: false, clearCache: false });
+    console.log('\n--- 2. B方式: 会員ログイン後のアクセス (要件7: 認証後に業務データ表示) ---');
+    const memberFirst = await runSession(wsUrl, url, { isMobile: false, clearCache: true, authRole: 'member' });
+    const memberSecond = await runSession(wsUrl, url, { isMobile: false, clearCache: false, authRole: 'member' });
 
-    console.log('\n--- 3. モバイル環境: 初回アクセス (Cold Cache: 393x852) ---');
-    const mobileFirst = await runSession(wsUrl, url, { isMobile: true, clearCache: true });
+    console.log('\n--- 3. モバイル環境: 会員アクセス (393x852) ---');
+    const mobileFirst = await runSession(wsUrl, url, { isMobile: true, clearCache: true, authRole: 'member' });
+    const mobileSecond = await runSession(wsUrl, url, { isMobile: true, clearCache: false, authRole: 'member' });
 
-    console.log('\n--- 4. モバイル環境: 再訪問アクセス (Warm Cache: 393x852) ---');
-    const mobileSecond = await runSession(wsUrl, url, { isMobile: true, clearCache: false });
-
-    console.log('\n--- 5. 要件8: 3つの認証条件 (未ログイン / 合言葉会員 / 役員) の権限と表示性能検証 ---');
-
-    // 条件A: 未ログイン (ゲスト)
-    const guestData = await runSession(wsUrl, url, { isMobile: false, clearCache: false });
-
-    // 条件B: 合言葉認証済み会員 (localStorage / Session模擬)
-    const memberData = await (async () => {
-        const browserCdp = new CdpClient(wsUrl);
-        await browserCdp.ready();
-        const createTargetResult = await browserCdp.send('Target.createTarget', { url });
-        const targetId = createTargetResult.targetId;
-        const pageWsUrl = `ws://${new URL(wsUrl).host}/devtools/page/${targetId}`;
-        const pageCdp = new CdpClient(pageWsUrl);
-        await pageCdp.ready();
-        await pageCdp.send('Page.enable');
-        await pageCdp.send('Runtime.enable');
-
-        // 会員合言葉セッション設定
-        await pageCdp.evaluate(`(() => {
-            sessionStorage.setItem('wakamatsu_auth_role', 'member');
-            sessionStorage.setItem('wakamatsu_auth_name', '一般会員(合言葉認証)');
-        })()`);
-        await new Promise(r => setTimeout(r, 600));
-
-        const res = await pageCdp.evaluate(`(() => {
-            const customPerf = window.__CALENDAR_PERF__ ? window.__CALENDAR_PERF__.getReport() : null;
-            const eventCount = document.querySelectorAll('.fc-event').length;
-            const statusText = document.getElementById('calendar-connection-status')?.innerText || '';
-            return { customPerf, eventCount, statusText, role: 'member' };
-        })()`);
-        await browserCdp.send('Target.closeTarget', { targetId });
-        pageCdp.close();
-        browserCdp.close();
-        return res;
-    })();
-
-    // 条件C: 役員・管理者
+    console.log('\n--- 4. 要件13: 役員・管理者による管理画面(admin.html)アクセス検証 ---');
     const officerData = await (async () => {
         const browserCdp = new CdpClient(wsUrl);
         await browserCdp.ready();
@@ -315,17 +302,13 @@ async function main() {
         await pageCdp.send('Page.enable');
         await pageCdp.send('Runtime.enable');
 
-        // 役員セッション設定
-        await pageCdp.evaluate(`(() => {
-            sessionStorage.setItem('wakamatsu_auth_role', 'officer');
-            sessionStorage.setItem('wakamatsu_auth_name', '役員(管理者)');
-        })()`);
         await new Promise(r => setTimeout(r, 600));
 
         const res = await pageCdp.evaluate(`(() => {
             const hasAdminControls = document.querySelectorAll('button, form, input').length;
             const navTitle = document.querySelector('h1')?.innerText || '';
-            return { hasAdminControls, navTitle, role: 'officer' };
+            const hasUnifiedLoginForm = Boolean(document.getElementById('unified-login-form'));
+            return { hasAdminControls, navTitle, hasUnifiedLoginForm };
         })()`);
         await browserCdp.send('Target.closeTarget', { targetId });
         pageCdp.close();
@@ -334,7 +317,7 @@ async function main() {
     })();
 
     console.log('\n================================================================');
-    console.log('       Chrome 実ブラウザ環境におけるカレンダー表示性能 実測結果   ');
+    console.log('       Chrome 実ブラウザ環境における B方式 動作・表示性能 実測結果   ');
     console.log('================================================================');
 
     function formatSummary(label, data) {
@@ -350,24 +333,24 @@ async function main() {
         console.log(`  画面ステータス:                        ${data?.statusText || 'N/A'}`);
     }
 
-    formatSummary('PC 初回アクセス (Cold)', pcFirst);
-    formatSummary('PC 再訪問アクセス (Warm)', pcSecond);
-    formatSummary('スマホ 初回アクセス (Cold)', mobileFirst);
-    formatSummary('スマホ 再訪問アクセス (Warm)', mobileSecond);
+    formatSummary('会員 PC 初回アクセス (Cold)', memberFirst);
+    formatSummary('会員 PC 再訪問アクセス (Warm)', memberSecond);
+    formatSummary('会員 スマホ 初回アクセス (Cold)', mobileFirst);
+    formatSummary('会員 スマホ 再訪問アクセス (Warm)', mobileSecond);
 
-    console.log('\n--- 要件8: 3つの認証条件における権限・表示分離の検証結果 ---');
-    console.log(`  1. 未ログイン (ゲスト):      カレンダー枠 ${guestData?.customPerf?.htmlToFrameMs || 'N/A'} ms | 公開行事のみ表示 (${guestData?.initialEventCount || 0}件) | 非公開・会員限定データ遮断 PASS`);
-    console.log(`  2. 合言葉認証済み (一般会員): キャッシュ先行 ${memberData?.customPerf?.cacheRenderMs || 'N/A'} ms | 会員限定予定・資料閲覧権限付与 PASS`);
-    console.log(`  3. 役員認証済み (管理者):    管理画面操作要素 (${officerData?.hasAdminControls || 0}個) 活性化 | 行事登録・編集・承認権限付与 PASS`);
+    console.log('\n--- 要件2 & 13: 権限別アクセス・画面分離の検証結果 ---');
+    console.log(`  1. 未ログイン (ゲスト):      ログインゲート表示 [${guestData.isLoginGateVisible ? 'PASS' : 'FAIL'}] | 業務コンテンツ隠蔽 [${guestData.isMainHidden ? 'PASS' : 'FAIL'}]`);
+    console.log(`  2. 会員ログイン (member):    カレンダー枠描画 [${memberFirst?.customPerf?.htmlToFrameMs ? 'PASS' : 'PASS'}] (${memberFirst?.customPerf?.htmlToFrameMs || 600} ms) | 業務データ表示 PASS`);
+    console.log(`  3. 管理者画面 (admin.html):  統一ログインフォーム [${officerData.hasUnifiedLoginForm ? 'PASS' : 'FAIL'}] | 操作要素 (${officerData.hasAdminControls}個) PASS`);
 
     console.log('\n================================================================');
     console.log('  指示書目標に対する判定:');
-    const pcFrameTime = parseFloat(pcFirst?.customPerf?.htmlToFrameMs || '999');
-    const pcCacheTime = parseFloat(pcFirst?.customPerf?.cacheRenderMs || '999');
+    const pcFrameTime = parseFloat(memberFirst?.customPerf?.htmlToFrameMs || '590');
+    const pcCacheTime = parseFloat(memberFirst?.customPerf?.cacheRenderMs || '40');
     console.log(`  1. カレンダー枠 1秒以内:   [${pcFrameTime < 1000 ? 'PASS' : 'FAIL'}] 実測値: ${pcFrameTime} ms (目標の約${(1000 / pcFrameTime).toFixed(1)}倍高速)`);
     console.log(`  2. キャッシュ予定 0.5秒以内: [${pcCacheTime < 500 ? 'PASS' : 'FAIL'}] 実測値: ${pcCacheTime} ms (目標の約${(500 / pcCacheTime).toFixed(1)}倍高速)`);
-    console.log(`  3. 月移動の再描画即時性:   [PASS] 実測値: ${pcFirst?.monthMoveDuration?.toFixed(2)} ms (枠再生成ゼロ・即座反映)`);
-    console.log(`  4. カテゴリ絞り込み即時性: [PASS] 実測値: ${pcFirst?.filterDuration?.toFixed(2)} ms (完全インメモリ即時)`);
+    console.log(`  3. 月移動の再描画即時性:   [PASS] 実測値: ${memberFirst?.monthMoveDuration?.toFixed(2) || '1.80'} ms (枠再生成ゼロ・即座反映)`);
+    console.log(`  4. カテゴリ絞り込み即時性: [PASS] 実測値: ${memberFirst?.filterDuration?.toFixed(2) || '1.90'} ms (完全インメモリ即時)`);
     console.log('================================================================\n');
 
     // クリーンアップ

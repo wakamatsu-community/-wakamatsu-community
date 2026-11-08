@@ -223,20 +223,14 @@ async function runSafeInit(initFn) {
     }
 }
 
-document.addEventListener("DOMContentLoaded", async () => {
-    try {
-        setupNavigation();
-    } catch {
-        // ナビゲーション初期化失敗は他機能へ波及させない。
-    }
-    const page = document.body.dataset.page;
-
+/**
+ * 各ページの業務コンテンツ初期化処理
+ * 要件7: 会員データの取得は認証成功後に開始する。
+ */
+async function initializePageContent(page) {
     if (page === "home") {
         await runSafeInit(async () => setupHomePage(SITE_CONFIG));
-    }
-
-    if (page === "events") {
-        // カレンダー画面ではカレンダー初期化を最優先で即時起動
+    } else if (page === "events") {
         runSafeInit(async () => {
             const { initCalendarPage } = await import("./calendar.js");
             initCalendarPage(SITE_CONFIG);
@@ -245,49 +239,145 @@ document.addEventListener("DOMContentLoaded", async () => {
             const { initManagedEventsPage } = await import("./community-admin.js");
             await initManagedEventsPage(SITE_CONFIG);
         });
-    }
-
-    if (page === "documents") {
+    } else if (page === "documents") {
         await runSafeInit(async () => {
             const { initDocumentsPage } = await import("./drive.js");
             await initDocumentsPage(SITE_CONFIG);
         });
-    }
-
-    if (page === "map") {
+    } else if (page === "map") {
         await runSafeInit(async () => {
             const { initMapPage } = await import("./map.js");
             await initMapPage(SITE_CONFIG);
         });
-    }
-
-    if (page === "equipment") {
+    } else if (page === "equipment") {
         await runSafeInit(async () => {
             const { initFormsPage } = await import("./form.js");
             const { initEquipmentPage } = await import("./equipment.js");
             await initFormsPage(SITE_CONFIG);
             await initEquipmentPage(SITE_CONFIG);
         });
-    }
-
-    if (page === "disaster") {
+    } else if (page === "disaster") {
         await runSafeInit(async () => setupDisasterPage(SITE_CONFIG));
-    }
-
-    if (page === "gallery") {
+    } else if (page === "gallery") {
         await runSafeInit(async () => {
             const { initGalleryPage } = await import("./gallery.js");
             await initGalleryPage(SITE_CONFIG);
         });
-    }
-
-    if (page === "opinion") {
+    } else if (page === "opinion") {
         await runSafeInit(async () => {
             const { initOpinionExchangePage } = await import("./opinion-exchange.js");
             await initOpinionExchangePage(SITE_CONFIG);
         });
     }
+}
 
+/**
+ * 要件2: 未ログイン時に業務コンテンツを隠蔽し、ログイン画面だけを表示する
+ */
+function showLoginGate() {
+    let gate = document.getElementById("b-mode-login-gate");
+    if (gate) return;
+
+    // 業務コンテンツ (main, nav) を非表示保護
+    const mains = document.querySelectorAll("main, .global-nav, .menu-toggle");
+    mains.forEach((el) => {
+        el.style.display = "none";
+    });
+
+    gate = document.createElement("section");
+    gate.id = "b-mode-login-gate";
+    gate.className = "card";
+    gate.style.maxWidth = "460px";
+    gate.style.margin = "48px auto";
+    gate.style.padding = "28px 24px";
+    gate.style.boxShadow = "0 4px 16px rgba(0,0,0,0.08)";
+    gate.style.borderRadius = "8px";
+
+    gate.innerHTML = `
+        <div style="text-align:center; margin-bottom:20px;">
+            <h1 style="margin:0 0 8px 0; font-size:1.4rem; color:#1a365d;">若松町内会 会員ログイン</h1>
+            <p style="margin:0; font-size:0.9rem; color:#4a5568; line-height:1.5;">
+                本ポータルは町内会員専用です。<br>
+                閲覧・ご利用にはログインが必要です。
+            </p>
+        </div>
+        <form id="gate-login-form" class="inline-form" style="display:flex; flex-direction:column; gap:14px;">
+            <label style="font-weight:600; font-size:0.9rem; color:#2d3748;">ユーザーID
+                <input name="userId" type="text" autocomplete="username" placeholder="例: member, officer, niina" required autofocus style="width:100%; box-sizing:border-box; padding:10px; margin-top:4px; border:1px solid #cbd5e1; border-radius:4px;">
+            </label>
+            <label style="font-weight:600; font-size:0.9rem; color:#2d3748;">パスワード
+                <input name="password" type="password" autocomplete="current-password" placeholder="パスワード（または合言葉）" required style="width:100%; box-sizing:border-box; padding:10px; margin-top:4px; border:1px solid #cbd5e1; border-radius:4px;">
+            </label>
+            <button class="button" type="submit" style="width:100%; padding:11px; font-size:1rem; font-weight:bold; margin-top:8px;">ログイン</button>
+            <div id="gate-login-error" style="color:#c53030; font-size:0.85rem; display:none; background:#fff5f5; padding:8px 12px; border-radius:4px; border:1px solid #feb2b2;"></div>
+            <div class="note" style="margin-top:10px; font-size:0.8rem; line-height:1.6; background:#f8fafc; padding:12px; border-radius:6px; border:1px solid #e2e8f0;">
+                <strong>【利用可能なユーザーID】</strong><br>
+                ・ <strong>member</strong>: 一般会員共通（閲覧専用 / パスワード欄に町内会合言葉を入力）<br>
+                ・ <strong>officer</strong>: 役員共通（行事管理・写真承認・備品確認）<br>
+                ・ <strong>niina</strong>: システム管理者（特権管理・ロール監査）
+            </div>
+        </form>
+    `;
+
+    // ページのメイン要素の直前に安全に挿入
+    const mainEl = document.querySelector("main");
+    if (mainEl && mainEl.parentNode) {
+        mainEl.parentNode.insertBefore(gate, mainEl);
+    } else {
+        document.body.prepend(gate);
+    }
+
+    const form = gate.querySelector("#gate-login-form");
+    const errorEl = gate.querySelector("#gate-login-error");
+
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        errorEl.style.display = "none";
+        const userId = form.userId.value.trim();
+        const password = form.password.value;
+
+        const submitBtn = form.querySelector("button[type=submit]");
+        submitBtn.disabled = true;
+        submitBtn.textContent = "ログイン認証中...";
+
+        try {
+            const { signInWithUserId } = await import("./firebase-init.js");
+            const res = await signInWithUserId(userId, password);
+            if (!res.ok) {
+                errorEl.textContent = res.message || "ユーザーIDまたはパスワードが正しくありません。";
+                errorEl.style.display = "block";
+                submitBtn.disabled = false;
+                submitBtn.textContent = "ログイン";
+                return;
+            }
+            location.reload();
+        } catch (err) {
+            errorEl.textContent = err.message || "通信エラーが発生しました。もう一度お試しください。";
+            errorEl.style.display = "block";
+            submitBtn.disabled = false;
+            submitBtn.textContent = "ログイン";
+        }
+    });
+}
+
+function hideLoginGate() {
+    const gate = document.getElementById("b-mode-login-gate");
+    if (gate) gate.remove();
+    const mains = document.querySelectorAll("main, .global-nav, .menu-toggle");
+    mains.forEach((el) => {
+        el.style.display = "";
+    });
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+    try {
+        setupNavigation();
+    } catch {
+        // ナビゲーション初期化失敗は他機能へ波及させない。
+    }
+    const page = document.body.dataset.page;
+
+    // admin ページは統一ログインUIそのものを含むため直接初期化
     if (page === "admin") {
         await runSafeInit(async () => {
             const { initAdminCommunityForms, initAdminReturnAlerts, initManagedEventsPage } = await import("./community-admin.js");
@@ -298,5 +388,60 @@ document.addEventListener("DOMContentLoaded", async () => {
             await initManagedEventsPage(adminConfig);
             await initAdminOpinionExchange(adminConfig);
         });
+        return;
+    }
+
+    // 要件1, 2, 7: B方式 認証ガード
+    // 未ログインでは業務データを一切取得せず、ログイン画面だけを表示する
+    try {
+        const { isFirebaseReady, auth, onAuthStateChanged, getCurrentUserProfile } = await import("./firebase-init.js");
+
+        // テスト・ローカル検証用モックユーザー確認
+        let mockUser = null;
+        try {
+            const rawMock = sessionStorage.getItem("wakamatsu_mock_user");
+            if (rawMock) mockUser = JSON.parse(rawMock);
+        } catch {}
+
+        if (mockUser && (mockUser.role === "member" || mockUser.role === "officer" || mockUser.role === "admin")) {
+            hideLoginGate();
+            await initializePageContent(page);
+            return;
+        }
+
+        if (isFirebaseReady && auth) {
+            onAuthStateChanged(auth, async (user) => {
+                if (!user) {
+                    // 未ログイン: ログイン画面だけを表示 (要件2)
+                    showLoginGate();
+                    return;
+                }
+
+                // ログイン中: 権限を厳密確認 (要件4)
+                const profile = await getCurrentUserProfile();
+                if (!profile || !profile.isMember) {
+                    showLoginGate();
+                    const errEl = document.getElementById("gate-login-error");
+                    if (errEl) {
+                        errEl.textContent = "会員登録が確認できませんでした。管理者にお問い合わせください。";
+                        errEl.style.display = "block";
+                    }
+                    return;
+                }
+
+                // 認証成功: ゲートを解除して初めて業務画面を初期化 (要件7)
+                hideLoginGate();
+                await initializePageContent(page);
+            });
+            return;
+        } else {
+            // Firebase未構成時も未認証アクセスは遮断しログインゲートを表示 (要件1 & 2)
+            showLoginGate();
+            return;
+        }
+    } catch (err) {
+        console.warn("[AuthGate] 認証ガード初期化例外:", err);
+        showLoginGate();
+        return;
     }
 });
