@@ -125,10 +125,10 @@ service cloud.firestore {
     }
 
     // 5. 回覧板・資料室 (documents)
-    // 閲覧: 公開資料は全員閲覧可
-    // 作成・更新・削除: 役員・管理者のみ
+    // 閲覧: Firebase Authenticationで認証された正規会員(member, officer, admin)のみ閲覧可能。未ログインは閲覧禁止
+    // 作成・更新・削除: 役員・管理者(isOfficer)のみ
     match /documents/{docId} {
-      allow read: if true;
+      allow read: if isMember();
       allow write: if isOfficer();
     }
 
