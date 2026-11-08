@@ -272,103 +272,168 @@ async function initializePageContent(page) {
 }
 
 /**
- * 要件2: 未ログイン時に業務コンテンツを隠蔽し、ログイン画面だけを表示する
+ * 会員専用操作の実行時に認証状態を確認し、未ログインならモーダルを表示する
+ * @param {Object} options
+ * @param {string} [options.actionLabel] 操作名（例: "備品予約", "参加申込"）
+ * @param {string} [options.buttonLabel] フォームの確定ボタン表示名（例: "予約を登録"）
+ * @param {Function} [options.onSuccess] 認証済みまたは認証成功時の即時コールバック
+ * @param {HTMLElement} [options.statusEl] 案内表示用要素
+ * @param {boolean} [options.officerOnly] 責任者以上の権限が必要か
+ * @returns {Promise<boolean>} 許可された場合は true、未ログイン等で中断した場合は false
  */
-function showLoginGate(errorMessage = null) {
-    let gate = document.getElementById("b-mode-login-gate");
-    if (gate) {
-        if (errorMessage) {
-            const errEl = gate.querySelector("#gate-login-error");
-            if (errEl) {
-                errEl.textContent = errorMessage;
-                errEl.style.display = "block";
+export async function requireMemberAuth(options = {}) {
+    try {
+        const { isFirebaseReady, auth, getCurrentUserProfile } = await import("./firebase-init.js");
+        if (!isFirebaseReady || !auth) {
+            if (options.statusEl) {
+                options.statusEl.textContent = "現在認証システムが利用できません。";
+                options.statusEl.style.color = "#c0392b";
+            }
+            return false;
+        }
+
+        if (auth.currentUser) {
+            const profile = await getCurrentUserProfile();
+            if (profile) {
+                if (options.officerOnly && !profile.isOfficer) {
+                    if (options.statusEl) {
+                        options.statusEl.textContent = "この操作は役員・管理者アカウントでのみ利用できます。";
+                        options.statusEl.style.color = "#c0392b";
+                    }
+                    return false;
+                }
+                if (profile.isMember) {
+                    if (typeof options.onSuccess === "function") {
+                        await options.onSuccess(profile);
+                    }
+                    return true;
+                }
             }
         }
-        return;
+
+        // 未ログインまたは権限不足: モーダルを表示して案内
+        showAuthModal(options);
+        return false;
+    } catch (err) {
+        console.warn("[Auth] 認証確認例外:", err);
+        return false;
+    }
+}
+
+/**
+ * 会員ログインモーダルを表示する（入力値を保持し、ログイン後に手動確認を促す）
+ */
+function showAuthModal(options = {}) {
+    let modal = document.getElementById("action-auth-modal");
+    if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "action-auth-modal";
+        modal.className = "modal-overlay";
+        modal.setAttribute("role", "dialog");
+        modal.setAttribute("aria-modal", "true");
+        modal.innerHTML = `
+            <section class="modal-card" style="max-width:440px; margin:auto;">
+                <h2 id="action-auth-modal-title" style="margin:0 0 8px 0; font-size:1.3rem; color:#1a365d;">会員ログイン</h2>
+                <p id="action-auth-modal-desc" class="note" style="margin-bottom:14px; font-size:0.9rem;"></p>
+                <form id="action-auth-form" class="inline-form" style="display:flex; flex-direction:column; gap:12px;">
+                    <label style="font-size:0.9rem; font-weight:600;">ユーザーID
+                        <input name="userId" type="text" autocomplete="username" placeholder="例: member, officer, niina" required autofocus style="width:100%; box-sizing:border-box; padding:8px; border:1px solid #cbd5e1; border-radius:4px;">
+                    </label>
+                    <label style="font-size:0.9rem; font-weight:600;">パスワード
+                        <input name="password" type="password" autocomplete="current-password" placeholder="パスワード（または合言葉）" required style="width:100%; box-sizing:border-box; padding:8px; border:1px solid #cbd5e1; border-radius:4px;">
+                    </label>
+                    <div class="button-row modal-button-row" style="margin-top:8px;">
+                        <button class="button" type="submit" id="action-auth-submit-btn">ログイン</button>
+                        <button class="button" type="button" id="action-auth-close-btn">キャンセル</button>
+                    </div>
+                    <p id="action-auth-status" class="note" aria-live="polite" style="margin-top:6px; color:#c0392b; display:none;"></p>
+                    <div class="note" style="margin-top:8px; font-size:0.8rem; line-height:1.5; background:#f8fafc; padding:8px; border-radius:4px;">
+                        ・ <strong>member</strong>: 一般会員共通（パスワード欄に合言葉を入力）<br>
+                        ・ <strong>officer</strong>: 役員共通 / <strong>niina</strong>: 管理者
+                    </div>
+                </form>
+            </section>
+        `;
+        document.body.appendChild(modal);
+
+        const closeBtn = modal.querySelector("#action-auth-close-btn");
+        if (closeBtn) {
+            closeBtn.addEventListener("click", () => {
+                modal.classList.add("hidden");
+                modal.style.display = "none";
+                document.body.style.overflow = "";
+            });
+        }
     }
 
-    // 業務コンテンツ (main, nav) を非表示保護
-    const mains = document.querySelectorAll("main, .global-nav, .menu-toggle");
-    mains.forEach((el) => {
-        el.style.display = "none";
-    });
+    const descEl = modal.querySelector("#action-auth-modal-desc");
+    const statusEl = modal.querySelector("#action-auth-status");
+    const form = modal.querySelector("#action-auth-form");
+    const submitBtn = modal.querySelector("#action-auth-submit-btn");
 
-    gate = document.createElement("section");
-    gate.id = "b-mode-login-gate";
-    gate.className = "card";
-    gate.style.maxWidth = "460px";
-    gate.style.margin = "48px auto";
-    gate.style.padding = "28px 24px";
-    gate.style.boxShadow = "0 4px 16px rgba(0,0,0,0.08)";
-    gate.style.borderRadius = "8px";
-
-    gate.innerHTML = `
-        <div style="text-align:center; margin-bottom:20px;">
-            <h1 style="margin:0 0 8px 0; font-size:1.4rem; color:#1a365d;">若松町内会 会員ログイン</h1>
-            <p style="margin:0; font-size:0.9rem; color:#4a5568; line-height:1.5;">
-                本ポータルは町内会員専用です。<br>
-                閲覧・ご利用にはログインが必要です。
-            </p>
-        </div>
-        <form id="gate-login-form" class="inline-form" style="display:flex; flex-direction:column; gap:14px;">
-            <label style="font-weight:600; font-size:0.9rem; color:#2d3748;">ユーザーID
-                <input name="userId" type="text" autocomplete="username" placeholder="例: member, officer, niina" required autofocus style="width:100%; box-sizing:border-box; padding:10px; margin-top:4px; border:1px solid #cbd5e1; border-radius:4px;">
-            </label>
-            <label style="font-weight:600; font-size:0.9rem; color:#2d3748;">パスワード
-                <input name="password" type="password" autocomplete="current-password" placeholder="パスワード（または合言葉）" required style="width:100%; box-sizing:border-box; padding:10px; margin-top:4px; border:1px solid #cbd5e1; border-radius:4px;">
-            </label>
-            <button class="button" type="submit" style="width:100%; padding:11px; font-size:1rem; font-weight:bold; margin-top:8px;">ログイン</button>
-            <div id="gate-login-error" style="color:#c53030; font-size:0.85rem; display:${errorMessage ? "block" : "none"}; background:#fff5f5; padding:8px 12px; border-radius:4px; border:1px solid #feb2b2; line-height:1.5;">${errorMessage || ""}</div>
-            <div class="note" style="margin-top:10px; font-size:0.8rem; line-height:1.6; background:#f8fafc; padding:12px; border-radius:6px; border:1px solid #e2e8f0;">
-                <strong>【利用可能なユーザーID】</strong><br>
-                ・ <strong>member</strong>: 一般会員共通（閲覧専用 / パスワード欄に町内会合言葉を入力）<br>
-                ・ <strong>officer</strong>: 役員共通（行事管理・写真承認・備品確認）<br>
-                ・ <strong>niina</strong>: システム管理者（特権管理・ロール監査）
-            </div>
-        </form>
-    `;
-
-    // ページのメイン要素の直前に安全に挿入
-    const mainEl = document.querySelector("main");
-    if (mainEl && mainEl.parentNode) {
-        mainEl.parentNode.insertBefore(gate, mainEl);
-    } else {
-        document.body.prepend(gate);
+    if (descEl) {
+        const actionText = options.actionLabel ? `「${options.actionLabel}」` : "この操作";
+        descEl.textContent = `${actionText}を行うには会員ログインが必要です。ログイン後に入力内容を確認して送信できます。`;
     }
+    if (statusEl) {
+        statusEl.textContent = "";
+        statusEl.style.display = "none";
+    }
+    if (form) {
+        form.reset();
+        // 新しい送信リスナーを設定
+        form.onsubmit = async (e) => {
+            e.preventDefault();
+            const userId = form.userId.value.trim();
+            const password = form.password.value;
 
-    const form = gate.querySelector("#gate-login-form");
-    const errorEl = gate.querySelector("#gate-login-error");
+            submitBtn.disabled = true;
+            submitBtn.textContent = "認証中...";
+            statusEl.style.display = "none";
 
-    form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        errorEl.style.display = "none";
-        const userId = form.userId.value.trim();
-        const password = form.password.value;
+            try {
+                const { signInWithUserId } = await import("./firebase-init.js");
+                const res = await signInWithUserId(userId, password);
+                if (!res.ok) {
+                    statusEl.textContent = res.message || "ユーザーIDまたはパスワードが正しくありません。";
+                    statusEl.style.display = "block";
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = "ログイン";
+                    return;
+                }
 
-        const submitBtn = form.querySelector("button[type=submit]");
-        submitBtn.disabled = true;
-        submitBtn.textContent = "ログイン認証中...";
-
-        try {
-            const { signInWithUserId } = await import("./firebase-init.js");
-            const res = await signInWithUserId(userId, password);
-            if (!res.ok) {
-                errorEl.textContent = res.message || "ユーザーIDまたはパスワードが正しくありません。";
-                errorEl.style.display = "block";
+                // ログイン成功: モーダルを閉じる
+                modal.classList.add("hidden");
+                modal.style.display = "none";
+                document.body.style.overflow = "";
                 submitBtn.disabled = false;
                 submitBtn.textContent = "ログイン";
-                return;
+
+                // 要件2: 元の画面・入力状態に復帰させ、自動送信せず手動確認を促す
+                const btnName = options.buttonLabel || "登録";
+                if (options.statusEl) {
+                    options.statusEl.textContent = `✅ ログインしました（${res.profile?.name || "会員"}様）。内容を確認のうえ、もう一度【${btnName}】ボタンを押してください。`;
+                    options.statusEl.style.color = "#247246";
+                }
+
+                // モーダルオープンなどの表示系操作の場合はコールバックを実行
+                if (typeof options.onSuccess === "function") {
+                    await options.onSuccess(res.profile);
+                }
+            } catch (authErr) {
+                statusEl.textContent = authErr.message || "通信エラーが発生しました。";
+                statusEl.style.display = "block";
+                submitBtn.disabled = false;
+                submitBtn.textContent = "ログイン";
             }
-            // 認証＆権限確認が完了したため、ゲートを非表示にして安全に画面を初期化
-            submitBtn.textContent = "ログイン成功！読み込み中...";
-            await safeInitializePage(document.body.dataset.page);
-        } catch (err) {
-            errorEl.textContent = err.message || "通信エラーが発生しました。もう一度お試しください。";
-            errorEl.style.display = "block";
-            submitBtn.disabled = false;
-            submitBtn.textContent = "ログイン";
-        }
-    });
+        };
+    }
+
+    modal.classList.remove("hidden");
+    modal.style.display = "flex";
+    document.body.style.overflow = "hidden";
+    const userIdInput = modal.querySelector('input[name="userId"]');
+    if (userIdInput) userIdInput.focus();
 }
 
 let isPageInitialized = false;
@@ -376,17 +441,7 @@ let isPageInitialized = false;
 async function safeInitializePage(page) {
     if (isPageInitialized) return;
     isPageInitialized = true;
-    hideLoginGate();
     await initializePageContent(page);
-}
-
-function hideLoginGate() {
-    const gate = document.getElementById("b-mode-login-gate");
-    if (gate) gate.remove();
-    const mains = document.querySelectorAll("main, .global-nav, .menu-toggle");
-    mains.forEach((el) => {
-        el.style.display = "";
-    });
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -411,69 +466,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
     }
 
-    // 要件1, 2, 7: B方式 認証ガード
-    // 未ログインでは業務データを一切取得せず、ログイン画面だけを表示する
-    try {
-        const { isFirebaseReady, auth, onAuthStateChanged, getCurrentUserProfile } = await import("./firebase-init.js");
-
-        // テスト・ローカル検証用モックユーザー確認
-        let mockUser = null;
-        try {
-            const rawMock = sessionStorage.getItem("wakamatsu_mock_user");
-            if (rawMock) mockUser = JSON.parse(rawMock);
-        } catch {}
-
-        if (mockUser && (mockUser.role === "member" || mockUser.role === "officer" || mockUser.role === "admin")) {
-            await safeInitializePage(page);
-            return;
-        }
-
-        if (isFirebaseReady && auth) {
-            onAuthStateChanged(auth, async (user) => {
-                if (!user) {
-                    // 未ログイン: 初期化フラグをリセットしログイン画面を表示 (要件2)
-                    isPageInitialized = false;
-                    showLoginGate();
-                    return;
-                }
-
-                // ログイン中: 権限を厳密確認 (要件4)
-                const profile = await getCurrentUserProfile();
-                if (!profile || !profile.isMember) {
-                    isPageInitialized = false;
-                    let detailMsg = "会員登録が確認できませんでした。管理者にお問い合わせください。";
-                    if (profile) {
-                        if (profile.status === "NOT_FOUND" || !profile.docExists) {
-                            detailMsg = `Firebase認証済みですが、Firestore users/${user.uid} にドキュメントが存在しません。Firebase Consoleで登録してください。`;
-                        } else if (profile.status === "PERMISSION_DENIED") {
-                            detailMsg = `Firestoreアクセス権限エラー (permission-denied): users/${user.uid} のドキュメントIDを確認してください。`;
-                        } else if (profile.role === "guest") {
-                            detailMsg = `アカウントの権限(role)が無効です (role="guest")。管理者に権限設定をご確認ください。`;
-                        }
-                    }
-                    showLoginGate(detailMsg);
-                    return;
-                }
-
-                // 認証成功: ゲートを解除して安全に業務画面を初期化 (要件7)
-                await safeInitializePage(page);
-            });
-            return;
-        } else {
-            // Firebase未構成時: 原因を明示してログインゲートを表示 (要件1 & 2 & 4)
-            const missing = [];
-            const cfg = typeof window !== "undefined" && window.RUNTIME_CONFIG ? window.RUNTIME_CONFIG : {};
-            if (!cfg.FIREBASE_API_KEY) missing.push("APIキー");
-            if (!cfg.FIREBASE_PROJECT_ID) missing.push("プロジェクトID");
-            const err = missing.length > 0
-                ? `【システム警告】Firebase接続設定が不足しています (${missing.join(", ")} が未設定)。runtime-config.js を確認してください。`
-                : "【システム警告】Firebase Authentication の初期化に失敗しました。";
-            showLoginGate(err);
-            return;
-        }
-    } catch (err) {
-        console.warn("[AuthGate] 認証ガード初期化例外:", err);
-        showLoginGate();
-        return;
-    }
+    // 確定仕様: ホームページおよび公開ページは未ログインでも通常表示
+    // 業務コンテンツを即時初期化（ゼロ待機・一般公開）
+    await safeInitializePage(page);
 });

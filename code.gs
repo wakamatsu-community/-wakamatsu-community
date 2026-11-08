@@ -587,7 +587,6 @@ function getEquipmentStatusForFrontend_() {
       quantity: Number(row["数量"] || 0),
       loanDate: normalizeDateText_(row["貸出日"]),
       returnDate: normalizeDateText_(row["返納日"]),
-      applicant: String(row["申請者"] || ""),
       status: String(row["ステータス"] || "")
     };
   }).filter(function(item) { return !!item.equipmentLabel; });

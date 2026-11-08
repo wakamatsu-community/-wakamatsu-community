@@ -31,12 +31,13 @@ if (!fs.existsSync(eventsPath)) {
 
     console.log(`[INFO] 公開ファイル内の行事データ件数: ${events.length} 件`);
 
-    // 要件1: B方式に合わせ、Docs/events.json の行事データが未ログインで直接閲覧できないよう空配列(0件)であること
-    if (events.length > 0) {
-        console.error(`[FAIL] Docs/events.json に ${events.length} 件の行事データが含まれています。B方式では未ログイン閲覧を遮断するため空配列でなければなりません。`);
+    // 確定仕様: 公開行事キャッシュ(events.json)は未ログイン閲覧可能。ただし個人情報(氏名・電話等)は完全排除されていること
+    const hasPersonalInfo = /090-\d{4}-\d{4}|080-\d{4}-\d{4}|山田|田中|佐藤|niina@|officer@|member@/.test(raw);
+    if (hasPersonalInfo) {
+        console.error(`[FAIL] Docs/events.json に個人情報またはメールアドレスが含まれています`);
         hasError = true;
     } else {
-        console.log('[PASS] Docs/events.json は空配列です（未ログイン利用者の直接閲覧完全遮断 PASS）');
+        console.log(`[PASS] Docs/events.json に個人情報は含まれていません (${events.length}件の公開行事データ PASS)`);
     }
 }
 

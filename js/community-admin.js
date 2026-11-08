@@ -1,5 +1,6 @@
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
 import { auth, db, isFirebaseReady, signInWithEmailAndPassword, getCurrentUserProfile } from "./firebase-init.js";
+import { requireMemberAuth } from "./main.js";
 
 const EVENTS_STORE_KEY = "wakamatsu_managed_events_v1";
 
@@ -495,6 +496,15 @@ function bindRecruitForm(config, events) {
 
     form.addEventListener("submit", async (e) => {
         e.preventDefault();
+
+        // 会員認証確認 (未ログインならログインモーダルを表示し、復帰時は手動確認を促す)
+        const isAuthed = await requireMemberAuth({
+            actionLabel: "コミニティ参加登録",
+            buttonLabel: "参加要件を登録",
+            statusEl: status
+        });
+        if (!isAuthed) return;
+
         const fd = new FormData(form);
         const selectedEvent = events.find((event) => event.id === String(fd.get("eventId") || ""));
         if (selectedEvent && (selectedEvent.entryEnabled === false || selectedEvent.status === "closed")) {
@@ -606,8 +616,16 @@ function bindCommunityCreateModal(config, events, onEventAdded) {
         return;
     }
 
-    openButton.addEventListener("click", () => {
-        openCommunityCreateModal();
+    openButton.addEventListener("click", async () => {
+        const isAuthed = await requireMemberAuth({
+            actionLabel: "コミニティ開催会の登録",
+            onSuccess: () => {
+                openCommunityCreateModal();
+            }
+        });
+        if (isAuthed) {
+            openCommunityCreateModal();
+        }
     });
 
     cancelButton.addEventListener("click", () => {
@@ -928,6 +946,15 @@ function bindAttendanceForm(config, events) {
 
     form.addEventListener("submit", async (e) => {
         e.preventDefault();
+
+        // 会員認証確認 (未ログインならログインモーダルを表示し、復帰時は手動確認を促す)
+        const isAuthed = await requireMemberAuth({
+            actionLabel: "コミニティ参加登録",
+            buttonLabel: "参加要件を登録",
+            statusEl: status
+        });
+        if (!isAuthed) return;
+
         const fd = new FormData(form);
         const payload = {
             type: "eventAttendance",
@@ -1265,11 +1292,21 @@ function bindAdminLogin() {
             currentRole.textContent = `👤 ログイン中: ${profile.name} 【${roleLabel}】`;
         }
 
-        // 要件6: 共通会員は管理操作パネルを非表示 (閲覧専用)、役員・管理者は全開
+        // 要件5: 責任者(officer)以上に業務マスタ管理を許可。特権管理はadmin専用
         if (profile.canManage) {
             setAdminPanelsVisible(true);
             setStatusText(status, `ログイン成功: ${roleLabel}権限が確認されました。管理操作が可能です。`);
             if (pwChangeToggle) pwChangeToggle.classList.remove("hidden");
+
+            // 個人情報台帳・管理者特権セクションの厳格分離 (admin のみ許可)
+            const peopleSection = document.getElementById("admin-people-form")?.closest("section");
+            if (peopleSection) {
+                if (profile.isAdmin) {
+                    peopleSection.classList.remove("hidden");
+                } else {
+                    peopleSection.classList.add("hidden");
+                }
+            }
         } else {
             setAdminPanelsVisible(false);
             setStatusText(status, `一般会員(閲覧専用)としてログイン中です。行事予定や資料室が閲覧できます。`);
@@ -1296,7 +1333,7 @@ function bindAdminLogin() {
         event.preventDefault();
         const fd = new FormData(loginForm);
         const userId = String(fd.get("userId") || "").trim();
-        const password = String(fd.get("password") || "").trim();
+        const password = String(fd.get("password") ?? "");
 
         status.textContent = "認証中...";
         status.style.color = "";
