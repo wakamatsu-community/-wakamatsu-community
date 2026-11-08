@@ -92,44 +92,76 @@ export async function getCurrentUserProfile() {
         const userDocSnap = await getDoc(userDocRef);
         if (userDocSnap.exists()) {
             const data = userDocSnap.data() || {};
-            // users/{uid}.role のみを厳密に参照
-            const role = String(data.role || "guest").trim().toLowerCase();
+            // users/{uid}.role のみを厳密に参照 (日本語フィールドや大文字表記にも安全にフォールバック)
+            const rawRole = data.role || data.Role || data.役職 || data.ロール || "guest";
+            let role = String(rawRole).trim().toLowerCase();
+            if (role === "管理者" || role === "システム管理者") role = "admin";
+            else if (role === "役員") role = "officer";
+            else if (role === "会員" || role === "一般会員" || role === "町内会員") role = "member";
+
             const isAdmin = role === "admin";
             const isOfficer = role === "officer" || isAdmin;
             const isMember = role === "member" || isOfficer;
+
+            const name = data.name || data.displayName || data.username || data.氏名 || data.名前 || user.displayName || user.email;
 
             return {
                 user,
                 uid: user.uid,
                 email: user.email,
                 role,
-                name: data.name || data.username || user.displayName || user.email,
-                group: data.group || "",
+                name,
+                group: data.group || data.組 || "",
                 isAdmin,
                 isOfficer,
                 isMember,
                 isCommonMember: role === "member",
-                canManage: isOfficer
+                canManage: isOfficer,
+                docExists: true,
+                status: "OK",
+                error: null
+            };
+        } else {
+            console.warn(`[Firebase] users/${user.uid} ドキュメントが存在しません。`);
+            return {
+                user,
+                uid: user.uid,
+                email: user.email,
+                role: "guest",
+                name: user.displayName || user.email || "未登録ユーザー",
+                group: "",
+                isAdmin: false,
+                isOfficer: false,
+                isMember: false,
+                isCommonMember: false,
+                canManage: false,
+                docExists: false,
+                status: "NOT_FOUND",
+                error: `Firestore の users/${user.uid} にドキュメントが存在しません。`
             };
         }
     } catch (err) {
         console.warn("[Firebase] users/{uid} プロファイル照会例外:", err);
+        const isPermissionDenied = err.code === "permission-denied" || (err.message && err.message.includes("permission"));
+        return {
+            user,
+            uid: user.uid,
+            email: user.email,
+            role: "guest",
+            name: user.displayName || user.email || "未登録ユーザー",
+            group: "",
+            isAdmin: false,
+            isOfficer: false,
+            isMember: false,
+            isCommonMember: false,
+            canManage: false,
+            docExists: false,
+            status: isPermissionDenied ? "PERMISSION_DENIED" : "ERROR",
+            error: isPermissionDenied
+                ? `Firestore権限エラー (permission-denied): users/${user.uid} へのアクセスが拒絶されました。ドキュメントIDがUIDと完全一致しているか確認してください。`
+                : (err.message || "プロファイル取得エラー")
+        };
     }
-
-    // usersドキュメントが存在しない、または未登録の場合は一切の会員・管理権限を与えない (要件4)
-    return {
-        user,
-        uid: user.uid,
-        email: user.email,
-        role: "guest",
-        name: user.displayName || user.email || "未登録ユーザー",
-        group: "",
-        isAdmin: false,
-        isOfficer: false,
-        isMember: false,
-        isCommonMember: false,
-        canManage: false
-    };
 }
 
 /**
@@ -175,26 +207,67 @@ export async function signInWithUserId(userId, password) {
 
     try {
         const userCredential = await signInWithEmailAndPassword(firebaseAuth, email, pwd);
-        // 要件6: 入力されたユーザーIDではなくFirebase UIDに基づいて権限を判定
+        const user = userCredential.user;
+
+        // 要件6: 入力されたユーザーIDではなくFirebase UIDに基づいて権限を厳密判定
         const profile = await getCurrentUserProfile();
+
+        // プロファイル検証 1: Security Rules によるアクセス拒絶 (permission-denied)
+        if (profile?.status === "PERMISSION_DENIED") {
+            await signOut(firebaseAuth).catch(() => {});
+            return {
+                ok: false,
+                errorType: "PERMISSION_DENIED",
+                message: `Firestoreセキュリティルールでアクセスが拒絶されました (permission-denied)。users/${user.uid} のドキュメントIDとFirebase UIDが一致しているか確認してください。`,
+                uid: user.uid,
+                email: user.email
+            };
+        }
+
+        // プロファイル検証 2: ドキュメント不在の検知
+        if (!profile || profile.status === "NOT_FOUND" || !profile.docExists) {
+            await signOut(firebaseAuth).catch(() => {});
+            return {
+                ok: false,
+                errorType: "NOT_FOUND",
+                message: `Firebase認証には成功しましたが、Firestoreの users コレクションに UID「${user.uid}」のドキュメントが存在しません。Firebase ConsoleのFirestoreでドキュメントIDをこのUIDにして作成してください。`,
+                uid: user.uid,
+                email: user.email
+            };
+        }
+
+        // プロファイル検証 3: 会員ロールの無効・不一致
+        if (!profile.isMember) {
+            await signOut(firebaseAuth).catch(() => {});
+            return {
+                ok: false,
+                errorType: "INVALID_ROLE",
+                message: `アカウントの権限(role)が無効です (現在の設定: "${profile.role}")。利用可能なrole: member, officer, admin`,
+                uid: user.uid,
+                email: user.email,
+                role: profile.role
+            };
+        }
 
         return {
             ok: true,
-            user: userCredential.user,
-            uid: userCredential.user.uid,
+            user,
+            uid: user.uid,
             profile,
-            role: profile?.role || "member",
-            canManage: Boolean(profile?.canManage)
+            role: profile.role,
+            canManage: Boolean(profile.canManage)
         };
     } catch (err) {
         const code = err.code || "";
         let message = "ユーザーIDまたはパスワードが正しくありません。";
         if (code === "auth/user-not-found") {
-            message = `アカウント「${userId}」がFirebase Authenticationに未作成です。(Firebase Consoleで手動作成が必要です)`;
+            message = `アカウント「${userId}」(${email})がFirebase Authenticationに未作成です。(Firebase Consoleで作成してください)`;
         } else if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
             message = "パスワードが正しくありません。";
         } else if (code === "auth/too-many-requests") {
             message = "ログイン試行回数が多すぎます。しばらく時間をおいてから再度お試しください。";
+        } else if (err.message) {
+            message = `認証エラー: ${err.message}`;
         }
         return {
             ok: false,
