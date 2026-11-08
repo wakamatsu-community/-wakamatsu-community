@@ -132,6 +132,18 @@ def inject_runtime_config() -> None:
         + "const runtime = (typeof window !== \"undefined\" && window.RUNTIME_CONFIG)\n"
         + "    ? window.RUNTIME_CONFIG\n"
         + "    : {};\n\n"
+        + "const defaultUserMap = {\n"
+        + "    niina: \"niina@wakamatsu-cho.internal\",\n"
+        + "    officer: \"officer@wakamatsu-cho.internal\",\n"
+        + "    member: \"member@wakamatsu-cho.internal\"\n"
+        + "};\n"
+        + "const customUserMap = (typeof runtime.AUTH_USER_MAP === \"object\" && runtime.AUTH_USER_MAP !== null)\n"
+        + "    ? runtime.AUTH_USER_MAP\n"
+        + "    : {};\n\n"
+        + "export const AUTH_USER_MAP = Object.freeze({\n"
+        + "    ...defaultUserMap,\n"
+        + "    ...customUserMap\n"
+        + "});\n\n"
         + "export const RUNTIME_CONFIG = Object.freeze(runtime);\n"
     )
     runtime_config_path.write_text(content, encoding="utf-8")

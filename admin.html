@@ -31,33 +31,23 @@
         <main class="section-stack">
             <section class="card admin-login-section">
                 <h1>若松町内会 会員・管理者ログイン</h1>
-                <p>Firebase Authenticationによる安全な認証を採用しています。旧4桁PINは廃止されました。</p>
+                <p>Firebase Authenticationによる安全な認証を採用しています。メールアドレスの入力は不要です。</p>
 
-                <!-- ログイン切り替えタブ -->
-                <div class="auth-tabs" style="display:flex; gap:8px; margin: 12px 0;">
-                    <button id="tab-member-auth" class="button filter-pill active" type="button" style="padding:6px 14px;">町内会員ログイン（合言葉）</button>
-                    <button id="tab-officer-auth" class="button filter-pill" type="button" style="padding:6px 14px; background:#5f6f68;">役員・管理者ログイン</button>
-                </div>
-
-                <!-- 1. 一般会員用: 共通合言葉ログインフォーム -->
-                <form id="member-passcode-form" class="inline-form" style="margin-top:12px;">
-                    <label>町内会共通の合言葉
-                        <input name="passcode" type="password" placeholder="会報等で配布された合言葉" autocomplete="current-password" required>
-                    </label>
-                    <button class="button" type="submit">会員として閲覧開始</button>
-                    <p class="note">※会員限定の行事予定・回覧板・資料が閲覧可能になります（閲覧専用）。</p>
-                </form>
-
-                <!-- 2. 役員・管理者用: 個別メール・パスワードログインフォーム -->
-                <form id="admin-login-form" class="inline-form hidden" style="margin-top:12px;">
-                    <label>メールアドレス
-                        <input name="email" type="email" autocomplete="username" placeholder="役員個別メールアドレス" required>
+                <!-- 統一ログインフォーム (ユーザーID + パスワード) -->
+                <form id="unified-login-form" class="inline-form" style="margin-top:12px;">
+                    <label>ユーザーID
+                        <input name="userId" type="text" autocomplete="username" placeholder="例: member, officer, niina" required autofocus>
                     </label>
                     <label>パスワード
-                        <input name="password" type="password" autocomplete="current-password" placeholder="8文字以上のパスワード" required>
+                        <input name="password" type="password" autocomplete="current-password" placeholder="パスワード（または合言葉）" required>
                     </label>
-                    <button class="button" type="submit">役員ログイン</button>
-                    <p class="note">※行事の追加・編集、写真の承認、備品管理などを行う役員・管理者用です。</p>
+                    <button class="button" type="submit">ログイン</button>
+                    <div class="note" style="margin-top:8px; line-height:1.6;">
+                        <strong>【利用可能なユーザーID】</strong><br>
+                        ・ <strong>member</strong>: 一般会員共通（閲覧専用 / パスワード欄に町内会合言葉を入力）<br>
+                        ・ <strong>officer</strong>: 役員共通（行事管理・写真承認・備品確認）<br>
+                        ・ <strong>niina</strong>: システム管理者（特権管理・ロール監査）
+                    </div>
                 </form>
 
                 <!-- ログイン状態表示 & 操作 -->
@@ -69,7 +59,7 @@
                             <button id="auth-logout-btn" class="button danger" type="button" style="padding:6px 14px;">ログアウト</button>
                             <button id="auth-password-change-toggle" class="button" type="button" style="padding:6px 14px; background:#5f6f68;">パスワード変更</button>
                         </div>
-                        <!-- パスワード変更サブフォーム -->
+                        <!-- パスワード変更サブフォーム (役員・管理者用) -->
                         <form id="auth-password-change-form" class="inline-form hidden" style="margin-top:12px; border-top:1px dashed #cbd5e1; padding-top:12px;">
                             <label>新しいパスワード（8文字以上）
                                 <input name="newPassword" type="password" required minlength="8">

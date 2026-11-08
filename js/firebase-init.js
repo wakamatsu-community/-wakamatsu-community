@@ -6,7 +6,7 @@
  * 公開用設定（APIキー等）のみを使用し、秘密鍵は一切含みません。
  */
 
-import { RUNTIME_CONFIG } from "./runtime-config.js";
+import { RUNTIME_CONFIG, AUTH_USER_MAP } from "./runtime-config.js";
 
 // Firebase Web SDK v10 (ES Modules via gstatic CDN)
 import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
@@ -112,20 +112,112 @@ export async function getCurrentUserProfile() {
         console.warn("[Firebase] ユーザープロファイル取得例外:", err);
     }
 
-    // usersドキュメントが未作成の場合のフォールバック
-    const fallbackRole = isCommon ? "member" : "guest";
+    // usersドキュメントが未作成の場合のフォールバック (メールアドレスから安全に初期判定)
+    let fallbackRole = "guest";
+    let fallbackName = user.displayName || user.email;
+    let fallbackIsAdmin = false;
+    let fallbackIsOfficer = false;
+
+    if (user.email) {
+        if (user.email.includes("niina@")) {
+            fallbackRole = "admin";
+            fallbackName = "新名 (システム管理者)";
+            fallbackIsAdmin = true;
+            fallbackIsOfficer = true;
+        } else if (user.email.includes("officer@")) {
+            fallbackRole = "officer";
+            fallbackName = "役員共通アカウント";
+            fallbackIsOfficer = true;
+        } else if (user.email.includes("member@")) {
+            fallbackRole = "member";
+            fallbackName = "町内会員 (閲覧専用)";
+        }
+    }
+
     return {
         user,
         uid: user.uid,
         email: user.email,
         role: fallbackRole,
-        name: isCommon ? "町内会員(共通合言葉)" : (user.displayName || user.email),
+        name: fallbackName,
         group: "",
-        isAdmin: false,
-        isOfficer: false,
+        isAdmin: fallbackIsAdmin,
+        isOfficer: fallbackIsOfficer,
         isCommonMember: isCommon,
-        canManage: false
+        canManage: fallbackIsOfficer
     };
+}
+
+/**
+ * 要件3: ユーザーIDを正規化し、設定ファイルからFirebase登録用メールアドレスを取得
+ * ユーザーにはメールアドレスを入力させず、IDから安全に変換します。
+ */
+export function resolveEmailFromUserId(userId) {
+    const raw = String(userId || "").trim();
+    if (!raw) return null;
+    if (raw.includes("@")) {
+        return raw; // メールアドレス直接入力との互換性
+    }
+    const normalized = raw.toLowerCase();
+    return AUTH_USER_MAP[normalized] || null;
+}
+
+/**
+ * 要件2, 5, 6: ユーザーID＋パスワードによるFirebase Authenticationログイン
+ * メールアドレスを入力させず、従来のGASと同じ「ユーザーID＋パスワード」で認証します。
+ * 認証成功後は入力IDではなく、Firebase UIDとFirestoreプロファイルに基づいて権限を厳密判定します。
+ *
+ * @param {string} userId ユーザーID (niina, officer, member)
+ * @param {string} password パスワード (または共通合言葉)
+ */
+export async function signInWithUserId(userId, password) {
+    if (!firebaseAuth) {
+        return { ok: false, errorType: "UNCONFIGURED", message: "Firebase Authが初期化されていません。" };
+    }
+
+    const email = resolveEmailFromUserId(userId);
+    if (!email) {
+        return {
+            ok: false,
+            errorType: "INVALID_USER_ID",
+            message: `ユーザーID「${userId}」は登録されていません。(利用可能なID: niina, officer, member)`
+        };
+    }
+
+    const pwd = String(password || "").trim();
+    if (!pwd) {
+        return { ok: false, errorType: "EMPTY_PASSWORD", message: "パスワードを入力してください。" };
+    }
+
+    try {
+        const userCredential = await signInWithEmailAndPassword(firebaseAuth, email, pwd);
+        // 要件6: 入力されたユーザーIDではなくFirebase UIDに基づいて権限を判定
+        const profile = await getCurrentUserProfile();
+
+        return {
+            ok: true,
+            user: userCredential.user,
+            uid: userCredential.user.uid,
+            profile,
+            role: profile?.role || "member",
+            canManage: Boolean(profile?.canManage)
+        };
+    } catch (err) {
+        const code = err.code || "";
+        let message = "ユーザーIDまたはパスワードが正しくありません。";
+        if (code === "auth/user-not-found") {
+            message = `アカウント「${userId}」がFirebase Authenticationに未作成です。(Firebase Consoleで手動作成が必要です)`;
+        } else if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
+            message = "パスワードが正しくありません。";
+        } else if (code === "auth/too-many-requests") {
+            message = "ログイン試行回数が多すぎます。しばらく時間をおいてから再度お試しください。";
+        }
+        return {
+            ok: false,
+            errorType: code || "AUTH_FAILED",
+            message
+        };
+    }
 }
 
 /**

@@ -1,25 +1,65 @@
 // scripts/test_security_rules.js
 /**
- * Firestore Security Rules アクセス制御マトリクス自動検証テスト
+ * Firestore Security Rules & ユーザーID認証アクセス制御マトリクス自動検証テスト
  *
  * 検証対象:
- *   1. 未ログイン (ゲスト住民)
- *   2. 共通会員 (町内会合言葉認証)
- *   3. 役員 (officer)
- *   4. システム管理者 (admin)
+ *   1. 未ログイン (guest)
+ *   2. 一般会員共通 (member)
+ *   3. 役員共通 (officer)
+ *   4. システム管理者 (niina)
  */
 
-console.log('=== Firestore Security Rules アクセス制御検証テスト開始 ===\n');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
 
-// Security Rules ロジックのエミュレータ関数
+const configPath = path.resolve(__dirname, '../dist/js/runtime-config.js');
+const rawCode = fs.readFileSync(configPath, 'utf8');
+const cjsCode = rawCode.replace(/export const /g, 'exports.');
+const sandbox = { window: {}, exports: {} };
+vm.createContext(sandbox);
+vm.runInContext(cjsCode, sandbox);
+const AUTH_USER_MAP = sandbox.exports.AUTH_USER_MAP;
+
+console.log('=== ユーザーID解決 & Firestore Security Rules 総合検証テスト開始 ===\n');
+
+// 1. ユーザーIDからFirebaseメールアドレスへの安全なマッピング解決テスト
+console.log('--- 1. ユーザーID解決 (resolveEmailFromUserId) テスト ---');
+function resolveEmail(userId) {
+    const raw = String(userId || '').trim();
+    if (!raw) return null;
+    if (raw.includes('@')) return raw;
+    return AUTH_USER_MAP[raw.toLowerCase()] || null;
+}
+
+const idMappingTests = [
+    { input: 'niina', expected: 'niina@wakamatsu-cho.internal' },
+    { input: 'NIINA ', expected: 'niina@wakamatsu-cho.internal' }, // 大文字・スペース正規化
+    { input: 'officer', expected: 'officer@wakamatsu-cho.internal' },
+    { input: 'OFFICER', expected: 'officer@wakamatsu-cho.internal' },
+    { input: 'member', expected: 'member@wakamatsu-cho.internal' },
+    { input: 'admin@example.com', expected: 'admin@example.com' }, // 直接メール入力互換
+    { input: 'unknown_user', expected: null } // 未登録ID
+];
+
+idMappingTests.forEach(({ input, expected }) => {
+    const res = resolveEmail(input);
+    const pass = res === expected;
+    console.log(`[${pass ? 'PASS' : 'FAIL'}] resolveEmail("${input}") => ${res} (期待値: ${expected})`);
+    if (!pass) process.exit(1);
+});
+
+// 2. Security Rules ロジックのエミュレータ関数
+console.log('\n--- 2. Firestore Security Rules アクセス制御マトリクステスト ---');
 function evaluateRule(ruleContext) {
     const { auth, resource, requestResource, path, method } = ruleContext;
 
     const isAuthenticated = auth !== null;
     const isCommonMember = isAuthenticated && Boolean(auth.email && auth.email.includes('member@'));
+    const isCommonOfficer = isAuthenticated && Boolean(auth.email && auth.email.includes('officer@'));
     const isIndividualMember = isAuthenticated && !isCommonMember;
 
-    const userRole = auth?.role || (isCommonMember ? 'member' : 'guest');
+    const userRole = auth?.role || (isCommonMember ? 'member' : (isCommonOfficer ? 'officer' : 'guest'));
     const isOfficer = isAuthenticated && (userRole === 'officer' || userRole === 'admin');
     const isAdmin = isAuthenticated && userRole === 'admin';
     const isOwner = (uid) => isAuthenticated && auth.uid === uid;
@@ -38,7 +78,7 @@ function evaluateRule(ruleContext) {
     // 2. communityEvents
     if (path.startsWith('communityEvents/')) {
         if (path.includes('/entries/')) {
-            // entries
+            // entries (参加者台帳)
             if (method === 'read') {
                 if (isOfficer) return true;
                 if (isIndividualMember && isOwner(resource?.data?.uid)) return true;
@@ -110,7 +150,7 @@ function evaluateRule(ruleContext) {
 }
 
 const tests = [
-    // [未ログイン]
+    // [未ログイン (guest)]
     {
         name: '未ログイン: 公開公式行事の閲覧',
         ctx: { auth: null, path: 'events/ev1', method: 'read', resource: { data: { status: 'published', isRestricted: false } } },
@@ -132,64 +172,64 @@ const tests = [
         expected: false
     },
 
-    // [共通合言葉会員]
+    // [一般会員共通 (member)]
     {
-        name: '共通会員: 会員限定行事の閲覧許可',
-        ctx: { auth: { uid: 'common_uid', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'events/ev2', method: 'read', resource: { data: { status: 'published', isRestricted: true } } },
+        name: 'member: 会員限定行事の閲覧許可',
+        ctx: { auth: { uid: 'uid_member', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'events/ev2', method: 'read', resource: { data: { status: 'published', isRestricted: true } } },
         expected: true
     },
     {
-        name: '共通会員: 会員限定資料の閲覧許可',
-        ctx: { auth: { uid: 'common_uid', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'documents/doc1', method: 'read', resource: { data: { isRestricted: true } } },
+        name: 'member: 会員限定資料の閲覧許可',
+        ctx: { auth: { uid: 'uid_member', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'documents/doc1', method: 'read', resource: { data: { isRestricted: true } } },
         expected: true
     },
     {
-        name: '共通会員: 公式行事の作成・変更拒絶 (閲覧専用保護)',
-        ctx: { auth: { uid: 'common_uid', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'events/ev1', method: 'write', requestResource: { data: { title: '改変' } } },
+        name: 'member: 公式行事の作成・変更拒絶 (閲覧専用保護)',
+        ctx: { auth: { uid: 'uid_member', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'events/ev1', method: 'write', requestResource: { data: { title: '改変' } } },
         expected: false
     },
     {
-        name: '共通会員: 参加者台帳(entries)への共通UID書き込み拒絶 (個人情報混入防止)',
-        ctx: { auth: { uid: 'common_uid', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'communityEvents/c1/entries/e1', method: 'create', requestResource: { data: { uid: 'common_uid' } } },
+        name: 'member: 参加者台帳(entries)への共通UID書き込み拒絶 (個人情報混入防止)',
+        ctx: { auth: { uid: 'uid_member', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'communityEvents/c1/entries/e1', method: 'create', requestResource: { data: { uid: 'uid_member' } } },
         expected: false
     },
     {
-        name: '共通会員: 備品予約への共通UID書き込み拒絶 (予約重複防止)',
-        ctx: { auth: { uid: 'common_uid', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'equipmentReservations/res1', method: 'create', requestResource: { data: { userUid: 'common_uid' } } },
+        name: 'member: 備品予約への共通UID書き込み拒絶 (予約重複防止)',
+        ctx: { auth: { uid: 'uid_member', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'equipmentReservations/res1', method: 'create', requestResource: { data: { userUid: 'uid_member' } } },
         expected: false
     },
     {
-        name: '共通会員: 役員ロールへの自己昇格拒絶 (role改ざん遮断)',
-        ctx: { auth: { uid: 'common_uid', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'users/common_uid', method: 'update', resource: { data: { role: 'member' } }, requestResource: { data: { role: 'officer' } } },
+        name: 'member: 役員ロールへの自己昇格拒絶 (role改ざん遮断)',
+        ctx: { auth: { uid: 'uid_member', email: 'member@wakamatsu-cho.internal', role: 'member' }, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member' } }, requestResource: { data: { role: 'officer' } } },
         expected: false
     },
 
-    // [役員 (officer)]
+    // [役員共通 (officer)]
     {
-        name: '役員: 公式行事の追加・更新許可',
-        ctx: { auth: { uid: 'officer_01', email: 'officer@wakamatsu-cho.internal', role: 'officer' }, path: 'events/ev1', method: 'write', requestResource: { data: { title: '清掃' } } },
+        name: 'officer: 公式行事の追加・更新許可 (管理操作)',
+        ctx: { auth: { uid: 'uid_officer', email: 'officer@wakamatsu-cho.internal', role: 'officer' }, path: 'events/ev1', method: 'write', requestResource: { data: { title: '清掃活動' } } },
         expected: true
     },
     {
-        name: '役員: 既存企画アーカイブ(eventPlanning)の参照許可',
-        ctx: { auth: { uid: 'officer_01', email: 'officer@wakamatsu-cho.internal', role: 'officer' }, path: 'eventPlanning/p1', method: 'read' },
+        name: 'officer: 既存企画アーカイブ(eventPlanning)の参照許可',
+        ctx: { auth: { uid: 'uid_officer', email: 'officer@wakamatsu-cho.internal', role: 'officer' }, path: 'eventPlanning/p1', method: 'read' },
         expected: true
     },
     {
-        name: '役員: 自身のロールを管理者(admin)へ自己昇格するのを拒絶',
-        ctx: { auth: { uid: 'officer_01', email: 'officer@wakamatsu-cho.internal', role: 'officer' }, path: 'users/officer_01', method: 'update', resource: { data: { role: 'officer' } }, requestResource: { data: { role: 'admin' } } },
+        name: 'officer: 自身のロールを管理者(admin)へ自己昇格するのを拒絶',
+        ctx: { auth: { uid: 'uid_officer', email: 'officer@wakamatsu-cho.internal', role: 'officer' }, path: 'users/uid_officer', method: 'update', resource: { data: { role: 'officer' } }, requestResource: { data: { role: 'admin' } } },
         expected: false
     },
 
-    // [システム管理者 (admin)]
+    // [システム管理者 (niina)]
     {
-        name: 'システム管理者: 会員ロールの変更許可 (初期付与・昇格)',
-        ctx: { auth: { uid: 'admin_niina', email: 'niina@wakamatsu-cho.internal', role: 'admin' }, path: 'users/user_target', method: 'update', resource: { data: { role: 'member' } }, requestResource: { data: { role: 'officer' } } },
+        name: 'niina: システム管理者による会員ロールの変更・初期付与許可',
+        ctx: { auth: { uid: 'uid_niina', email: 'niina@wakamatsu-cho.internal', role: 'admin' }, path: 'users/uid_target', method: 'update', resource: { data: { role: 'member' } }, requestResource: { data: { role: 'officer' } } },
         expected: true
     },
     {
         name: '未定義コレクションへのアクセス拒絶 (デフォルト拒絶)',
-        ctx: { auth: { uid: 'admin_niina', email: 'niina@wakamatsu-cho.internal', role: 'admin' }, path: 'unknownCollection/doc1', method: 'read' },
+        ctx: { auth: { uid: 'uid_niina', email: 'niina@wakamatsu-cho.internal', role: 'admin' }, path: 'unknownCollection/doc1', method: 'read' },
         expected: false
     }
 ];
