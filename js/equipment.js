@@ -9,8 +9,8 @@
  */
 
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
-import { db, isFirebaseReady, auth } from "./firebase-init.js";
-import { requireMemberAuth } from "./main.js";
+import { db, isFirebaseReady, auth, getCurrentUserProfile, onAuthStateChanged } from "./firebase-init.js";
+import { requireMemberAuth, showAuthModal } from "./main.js";
 import {
     collection,
     doc,
@@ -284,6 +284,68 @@ async function executeReservationTransaction(applicant, phone, group, items) {
 }
 
 /**
+ * 備品予約のログイン状態バーを更新する
+ */
+async function updateEquipmentAuthBar() {
+    const bar = document.getElementById("equipment-auth-status-bar");
+    if (!bar) return;
+
+    if (!auth?.currentUser) {
+        bar.className = "card sub-card auth-status-bar";
+        bar.style.display = "flex";
+        bar.style.flexWrap = "wrap";
+        bar.style.justifyContent = "space-between";
+        bar.style.alignItems = "center";
+        bar.style.gap = "8px";
+        bar.style.background = "#f8fafc";
+        bar.style.borderColor = "#cbd5e1";
+        bar.innerHTML = `
+            <span style="font-size:0.9rem; color:#475569;">⛺ 備品の予約申請には町内会員ログインが必要です。</span>
+            <button type="button" class="button" id="equipment-login-trigger" style="padding:4px 12px; font-size:0.85rem;">会員ログイン</button>
+        `;
+        const btn = bar.querySelector("#equipment-login-trigger");
+        if (btn) {
+            btn.addEventListener("click", () => {
+                showAuthModal({
+                    actionLabel: "備品の予約申請",
+                    buttonLabel: "予約を登録",
+                    onSuccess: () => {
+                        updateEquipmentAuthBar();
+                    }
+                });
+            });
+        }
+        return;
+    }
+
+    const profile = await getCurrentUserProfile();
+    if (!profile || !profile.isMember) {
+        bar.innerHTML = "";
+        return;
+    }
+
+    const roleLabel = profile.isAdmin ? "管理者" : (profile.isOfficer ? "役員" : "一般会員");
+    bar.className = "card sub-card auth-status-bar";
+    bar.style.display = "flex";
+    bar.style.flexWrap = "wrap";
+    bar.style.justifyContent = "space-between";
+    bar.style.alignItems = "center";
+    bar.style.gap = "8px";
+    bar.style.background = "#f0fdf4";
+    bar.style.borderColor = "#86efac";
+
+    let officerHtml = "";
+    if (profile.isOfficer) {
+        officerHtml = `<a href="admin.html#admin-equipment-records-section" class="button-link" style="padding:4px 10px; font-size:0.85rem; background:#1a365d;">⛺ 備品台帳・返納管理（管理ページ）</a>`;
+    }
+
+    bar.innerHTML = `
+        <span style="font-size:0.9rem; color:#166534;">✅ <strong>${profile.name || "会員"}様</strong>（${roleLabel}）としてログイン中。予約申請は役員承認後に確定します。</span>
+        ${officerHtml}
+    `;
+}
+
+/**
  * 備品予約ページ初期化
  */
 export async function initEquipmentPage(config = {}) {
@@ -485,7 +547,7 @@ export async function initEquipmentPage(config = {}) {
     }
 
     // カート追加ボタン
-    addItemButton.addEventListener("click", () => {
+    addItemButton.addEventListener("click", async () => {
         if (!selectedItem) return;
 
         const quantity = Number(formQuantity.value || 1);
@@ -497,6 +559,14 @@ export async function initEquipmentPage(config = {}) {
             formStatus.style.color = "#c0392b";
             return;
         }
+
+        // 会員認証確認 (未ログインならログインモーダルを表示し、復帰時は手動確認を促す)
+        const isAuthed = await requireMemberAuth({
+            actionLabel: "備品の予約申請",
+            buttonLabel: "この備品を予約リストへ追加",
+            statusEl: formStatus
+        });
+        if (!isAuthed) return;
 
         pendingCart.push({
             equipmentId: selectedItem.id,
@@ -585,6 +655,16 @@ export async function initEquipmentPage(config = {}) {
             formStatus.textContent = `予約失敗: ${err.message || err}`;
             formStatus.style.color = "#c0392b";
         }
+    });
+
+    updateEquipmentAuthBar();
+    if (auth) {
+        onAuthStateChanged(auth, () => {
+            updateEquipmentAuthBar();
+        });
+    }
+    window.addEventListener("app-auth-changed", () => {
+        updateEquipmentAuthBar();
     });
 }
 

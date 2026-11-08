@@ -8,8 +8,8 @@
  */
 
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
-import { db, isFirebaseReady, auth } from "./firebase-init.js";
-import { requireMemberAuth } from "./main.js";
+import { db, isFirebaseReady, auth, getCurrentUserProfile, onAuthStateChanged } from "./firebase-init.js";
+import { requireMemberAuth, showAuthModal } from "./main.js";
 import {
     collection,
     doc,
@@ -256,17 +256,79 @@ export async function updateOpinionByAdmin(opinionId, status, replyContent, answ
 }
 
 /**
+ * 情報交換ページのログイン状態バーを更新する
+ */
+async function updateOpinionAuthBar() {
+    const bar = document.getElementById("opinion-auth-status-bar");
+    if (!bar) return;
+
+    if (!auth?.currentUser) {
+        bar.className = "card sub-card auth-status-bar";
+        bar.style.display = "flex";
+        bar.style.flexWrap = "wrap";
+        bar.style.justifyContent = "space-between";
+        bar.style.alignItems = "center";
+        bar.style.gap = "8px";
+        bar.style.background = "#f8fafc";
+        bar.style.borderColor = "#cbd5e1";
+        bar.innerHTML = `
+            <span style="font-size:0.9rem; color:#475569;">💬 情報交換・地域相談の投稿には町内会員ログインが必要です。</span>
+            <button type="button" class="button" id="opinion-login-trigger" style="padding:4px 12px; font-size:0.85rem;">会員ログイン</button>
+        `;
+        const btn = bar.querySelector("#opinion-login-trigger");
+        if (btn) {
+            btn.addEventListener("click", () => {
+                showAuthModal({
+                    actionLabel: "ご意見・ご相談の投稿",
+                    buttonLabel: "投稿する",
+                    onSuccess: () => {
+                        updateOpinionAuthBar();
+                    }
+                });
+            });
+        }
+        return;
+    }
+
+    const profile = await getCurrentUserProfile();
+    if (!profile || !profile.isMember) {
+        bar.innerHTML = "";
+        return;
+    }
+
+    const roleLabel = profile.isAdmin ? "管理者" : (profile.isOfficer ? "役員" : "一般会員");
+    bar.className = "card sub-card auth-status-bar";
+    bar.style.display = "flex";
+    bar.style.flexWrap = "wrap";
+    bar.style.justifyContent = "space-between";
+    bar.style.alignItems = "center";
+    bar.style.gap = "8px";
+    bar.style.background = "#f0fdf4";
+    bar.style.borderColor = "#86efac";
+
+    let officerHtml = "";
+    if (profile.isOfficer) {
+        officerHtml = `<a href="admin.html#admin-opinion-exchange-section" class="button-link" style="padding:4px 10px; font-size:0.85rem; background:#1a365d;">💬 管理者確認・回答記入（管理ページ）</a>`;
+    }
+
+    bar.innerHTML = `
+        <span style="font-size:0.9rem; color:#166534;">✅ <strong>${profile.name || "会員"}様</strong>（${roleLabel}）としてログイン中。情報を投稿できます。</span>
+        ${officerHtml}
+    `;
+}
+
+/**
  * 一般画面 (opinion.html) の初期化
  */
 export async function initOpinionExchangePage(config = {}) {
-    const list = document.getElementById("opinion-list");
+    const list = document.getElementById("opinion-list") || document.getElementById("opinion-entry-list");
     const form = document.getElementById("opinion-form");
-    const status = document.getElementById("opinion-form-status");
+    const status = document.getElementById("opinion-form-status") || document.getElementById("opinion-status");
 
-    if (!list) return;
-
-    const opinions = await fetchOpinions();
-    renderOpinionEntries(list, opinions);
+    if (list) {
+        const opinions = await fetchOpinions();
+        renderOpinionEntries(list, opinions);
+    }
 
     if (form) {
         form.addEventListener("submit", async (e) => {
@@ -303,8 +365,10 @@ export async function initOpinionExchangePage(config = {}) {
                     status.style.color = "#247246";
                 }
                 form.reset();
-                const updated = await fetchOpinions();
-                renderOpinionEntries(list, updated);
+                if (list) {
+                    const updated = await fetchOpinions();
+                    renderOpinionEntries(list, updated);
+                }
             } else {
                 if (status) {
                     status.textContent = `送信失敗: ${res.error}`;
@@ -313,6 +377,16 @@ export async function initOpinionExchangePage(config = {}) {
             }
         });
     }
+
+    updateOpinionAuthBar();
+    if (auth) {
+        onAuthStateChanged(auth, () => {
+            updateOpinionAuthBar();
+        });
+    }
+    window.addEventListener("app-auth-changed", () => {
+        updateOpinionAuthBar();
+    });
 }
 
 /**
@@ -370,11 +444,12 @@ export async function initAdminOpinionExchange(config = {}) {
         form.addEventListener("submit", async (e) => {
             e.preventDefault();
 
-            // 会員認証確認 (未ログインならログインモーダルを表示し、復帰時は手動確認を促す)
+            // 役員・管理者認証確認 (未ログインまたは一般会員ならブロック)
             const isAuthed = await requireMemberAuth({
-                actionLabel: "ご意見・ご相談の投稿",
-                buttonLabel: "投稿する",
-                statusEl: status
+                actionLabel: "ご意見・ご相談への回答保存",
+                buttonLabel: "返答を保存して他端末へ反映",
+                officerOnly: true,
+                statusEl: saveStatus
             });
             if (!isAuthed) return;
 

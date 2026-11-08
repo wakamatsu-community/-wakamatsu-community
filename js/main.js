@@ -323,7 +323,7 @@ export async function requireMemberAuth(options = {}) {
 /**
  * 会員ログインモーダルを表示する（入力値を保持し、ログイン後に手動確認を促す）
  */
-function showAuthModal(options = {}) {
+export function showAuthModal(options = {}) {
     let modal = document.getElementById("action-auth-modal");
     if (!modal) {
         modal = document.createElement("div");
@@ -408,6 +408,10 @@ function showAuthModal(options = {}) {
                 document.body.style.overflow = "";
                 submitBtn.disabled = false;
                 submitBtn.textContent = "ログイン";
+
+                try {
+                    window.dispatchEvent(new CustomEvent("app-auth-changed", { detail: res.profile }));
+                } catch {}
 
                 // 要件2: 元の画面・入力状態に復帰させ、自動送信せず手動確認を促す
                 const btnName = options.buttonLabel || "登録";
