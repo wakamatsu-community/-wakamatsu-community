@@ -12,7 +12,7 @@ const EVENTS_JSON_PATH = path.join(ROOT, 'Docs', 'events.json');
 console.log('=== カレンダー高速化・性能検証テスト開始 ===\n');
 
 // 1. Docs/events.json キャッシュ検証
-console.log('--- 1. 高速静的キャッシュ (Docs/events.json) の検証 ---');
+console.log('--- 1. B方式 公開ファイル (Docs/events.json) 未ログイン閲覧遮断検証 ---');
 if (!fs.existsSync(EVENTS_JSON_PATH)) {
     console.error('[FAIL] Docs/events.json が存在しません');
     process.exit(1);
@@ -25,25 +25,32 @@ const parseTime = (performance.now() - t0).toFixed(3);
 
 const events = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.events) ? parsed.events : []);
 console.log(`[PASS] JSONパース所要時間: ${parseTime} ms`);
-console.log(`[PASS] キャッシュ内イベント件数: ${events.length} 件`);
-if (events.length === 0) {
-    console.error('[FAIL] キャッシュが空配列です。公開行事データが含まれていません。');
+console.log(`[PASS] 公開ファイル内イベント件数: ${events.length} 件`);
+if (events.length > 0) {
+    console.error('[FAIL] B方式では未ログイン閲覧を遮断するため、公開キャッシュは空配列でなければなりません。');
     process.exit(1);
 }
+console.log('[PASS] Docs/events.json は空配列です（未ログイン利用者の直接閲覧を完全遮断 PASS）');
 
-// 2. 個人情報・会員限定情報の漏洩検査
-console.log('\n--- 2. 公開キャッシュの機密情報・個人情報検査 ---');
-let hasPII = false;
-events.forEach((ev, i) => {
-    if (ev.phone || ev.contact || ev.email || ev.realName || ev.pin) {
-        console.error(`[FAIL] イベント[${i}]に個人情報が含まれています:`, ev);
-        hasPII = true;
-    }
-});
-if (hasPII) {
-    process.exit(1);
+// 2. 認証済み会員用データセット (35件) による高速化性能検証
+console.log('\n--- 2. 認証済み会員用データセット (35件) による高速化・性能検証 ---');
+const sampleEvents = [
+    { id: 'EV-1', title: '水野公園清掃活動', start: '2026-06-14T08:00:00+09:00', end: '', place: '水野公園', category: '清掃', allDay: false },
+    { id: 'EV-2', title: '第1回役員会', start: '2026-06-20T19:00:00+09:00', end: '', place: '集会所', category: '町内行事', allDay: false },
+    { id: 'EV-3', title: '夏祭り準備会', start: '2026-07-04T10:00:00+09:00', end: '', place: '広場', category: '町内行事', allDay: false }
+];
+for (let i = 4; i <= 35; i++) {
+    sampleEvents.push({
+        id: `EV-${i}`,
+        title: `町内行事 第${i}回 定期集会`,
+        start: `2026-07-${String((i % 28) + 1).padStart(2, '0')}T09:00:00+09:00`,
+        end: '',
+        place: '集会所',
+        category: i % 3 === 0 ? '清掃' : '町内行事',
+        allDay: false
+    });
 }
-console.log('[PASS] 個人情報・機密情報は含まれていません（安全な公開データのみ）');
+console.log(`[PASS] 認証済みテストイベント件数: ${sampleEvents.length} 件`);
 
 // 3. インメモリ・カテゴリフィルタリング速度検証
 console.log('\n--- 3. インメモリ・カテゴリフィルタリング速度検証 ---');
@@ -52,8 +59,8 @@ const categories = ['all', '町内行事', '清掃', '防災', 'コミニティ'
 categories.forEach((cat) => {
     const tStart = performance.now();
     const filtered = cat === 'all'
-        ? events
-        : events.filter((e) => (e.category || '').includes(cat) || (e.title || '').includes(cat));
+        ? sampleEvents
+        : sampleEvents.filter((e) => (e.category || '').includes(cat) || (e.title || '').includes(cat));
     const dt = (performance.now() - tStart).toFixed(3);
     console.log(`[PASS] カテゴリ [${cat}]: ${filtered.length}件抽出 (${dt} ms - 目標5ms以内)`);
 });
@@ -64,7 +71,7 @@ const loadedMonths = new Set();
 const eventsMap = new Map();
 
 // 初回当月ロード
-events.forEach(e => eventsMap.set(e.id, e));
+sampleEvents.forEach(e => eventsMap.set(e.id, e));
 loadedMonths.add('2026-06');
 loadedMonths.add('2026-07');
 

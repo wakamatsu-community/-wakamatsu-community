@@ -52,16 +52,17 @@ service cloud.firestore {
     // ==========================================
 
     // 1. 会員プロファイル (users)
-    // 要件1: 本人更新では role・username・管理用フィールド(email, permissions, isAdmin, isOfficer, status等)の変更を禁止
-    // - 他人のプロファイル閲覧は禁止 (本人のみ閲覧可、管理者は監査可能)
+    // 要件2: 本人更新を変更可能な項目だけを許可する方式(hasOnly())に変更
+    // - 本人が更新可能な項目: name, displayName, phone, group, updatedAt のみ
+    // - role, username, email, permissions 等の改ざんは完全遮断
     // - roleの変更・新規付与・削除は管理者(admin)のみ可能
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
       allow create: if isAdmin();
       allow update: if isAdmin() || (
         isOwner(userId) &&
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-          'role', 'username', 'email', 'permissions', 'isAdmin', 'isOfficer', 'status'
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'name', 'displayName', 'phone', 'group', 'updatedAt'
         ])
       );
       allow delete: if isAdmin();
@@ -100,13 +101,17 @@ service cloud.firestore {
       allow delete: if isOfficer();
 
       // サブコレクション: 参加者台帳 (entries) - 個人情報保護
-      // 要件11: 他人のUIDでのなりすまし参加申込を遮断。他人の台帳閲覧を完全遮断
+      // 要件3: 本人が所有者UID(uid)を変更できないようにする (他人の台帳閲覧・改ざん完全遮断)
       match /entries/{entryId} {
         allow read: if isOfficer() ||
                     (isAuthenticated() && resource.data.uid == request.auth.uid);
         allow create: if isMember() && request.resource.data.uid == request.auth.uid;
-        allow update, delete: if isOfficer() ||
-                              (isAuthenticated() && resource.data.uid == request.auth.uid);
+        allow update: if isOfficer() ||
+                      (isAuthenticated() &&
+                       resource.data.uid == request.auth.uid &&
+                       request.resource.data.uid == resource.data.uid);
+        allow delete: if isOfficer() ||
+                      (isAuthenticated() && resource.data.uid == request.auth.uid);
       }
     }
 

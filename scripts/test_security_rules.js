@@ -98,13 +98,13 @@ function evaluateRuleB(ruleContext) {
         if (method === 'update') {
             if (isAdmin) return true;
             if (isOwner(userId)) {
-                // 追加要件1: role・username・管理用フィールド(email, permissions, isAdmin, isOfficer, status等)の変更禁止
-                const protectedKeys = ['role', 'username', 'email', 'permissions', 'isAdmin', 'isOfficer', 'status'];
+                // 要件2: 変更可能な項目だけを許可する方式(hasOnly())
+                // 許可項目: name, displayName, phone, group, updatedAt のみ
+                const allowedKeys = ['name', 'displayName', 'phone', 'group', 'updatedAt'];
                 const before = resource?.data || {};
                 const after = requestResource?.data || {};
                 const changedKeys = Object.keys({ ...before, ...after }).filter(k => before[k] !== after[k]);
-                const hasProtected = changedKeys.some(k => protectedKeys.includes(k));
-                return !hasProtected;
+                return changedKeys.length > 0 && changedKeys.every(k => allowedKeys.includes(k));
             }
             return false;
         }
@@ -138,7 +138,17 @@ function evaluateRuleB(ruleContext) {
             if (method === 'create') {
                 return isMember && requestResource?.data?.uid === auth.uid;
             }
-            if (method === 'update' || method === 'delete') {
+            if (method === 'update') {
+                if (isOfficer) return true;
+                if (isAuthenticated) {
+                    // 要件3: 本人が所有者UID(uid)を変更できないようにする
+                    const isMyEntry = resource?.data?.uid === auth.uid;
+                    const uidUnchanged = requestResource?.data?.uid === resource?.data?.uid;
+                    return isMyEntry && uidUnchanged;
+                }
+                return false;
+            }
+            if (method === 'delete') {
                 return isOfficer || (isAuthenticated && resource?.data?.uid === auth.uid);
             }
         }
@@ -281,7 +291,7 @@ const tests = [
         expected: false
     },
 
-    // [追加要件1: users 本人更新での role・username・管理フィールド変更禁止]
+    // [要件2: users 本人更新のホワイトリスト方式 (hasOnly()) 検証]
     {
         name: 'member: 自身の users 参照許可',
         ctx: { auth: authMember, path: 'users/uid_member', method: 'read' },
@@ -293,29 +303,24 @@ const tests = [
         expected: false
     },
     {
-        name: 'member: 自身の role 変更試行の拒絶 (追加要件1)',
+        name: 'member: 許可項目(name, phone, group)のみの本人更新許可 (要件2: hasOnly)',
+        ctx: { auth: authMember, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member', username: 'member', name: '旧名' } }, requestResource: { data: { role: 'member', username: 'member', name: '新名', phone: '090-0000-0000', group: '1組2班' } } },
+        expected: true
+    },
+    {
+        name: 'member: 自身の role 変更試行の拒絶 (要件2: hasOnly遮断)',
         ctx: { auth: authMember, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member', username: 'member' } }, requestResource: { data: { role: 'officer', username: 'member' } } },
         expected: false
     },
     {
-        name: 'member: 自身の username 変更試行の拒絶 (追加要件1)',
+        name: 'member: 自身の username 変更試行の拒絶 (要件2: hasOnly遮断)',
         ctx: { auth: authMember, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member', username: 'member' } }, requestResource: { data: { role: 'member', username: 'hacker' } } },
         expected: false
     },
     {
-        name: 'member: 自身の email 変更試行の拒絶 (追加要件1)',
-        ctx: { auth: authMember, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member', username: 'member', email: 'old@ex.com' } }, requestResource: { data: { role: 'member', username: 'member', email: 'new@ex.com' } } },
+        name: 'member: 未許可フィールド(address, permissions等)変更試行の拒絶 (要件2: hasOnly遮断)',
+        ctx: { auth: authMember, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member', username: 'member' } }, requestResource: { data: { role: 'member', username: 'member', address: '東京' } } },
         expected: false
-    },
-    {
-        name: 'member: 自身の 管理用フィールド(permissions) 変更試行の拒絶 (追加要件1)',
-        ctx: { auth: authMember, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member', username: 'member' } }, requestResource: { data: { role: 'member', username: 'member', permissions: ['all'] } } },
-        expected: false
-    },
-    {
-        name: 'member: 自身の 表示名・電話番号(一般プロファイル) 変更許可 (追加要件1)',
-        ctx: { auth: authMember, path: 'users/uid_member', method: 'update', resource: { data: { role: 'member', username: 'member', name: '旧名' } }, requestResource: { data: { role: 'member', username: 'member', name: '新名' } } },
-        expected: true
     },
     {
         name: 'admin: 会員の role・username 変更許可 (管理者特権)',
@@ -396,6 +401,16 @@ const tests = [
     {
         name: 'member: 他人の参加台帳参照拒絶 (個人情報保護)',
         ctx: { auth: authMember, path: 'communityEvents/c1/entries/e2', method: 'read', resource: { data: { uid: 'uid_other' } } },
+        expected: false
+    },
+    {
+        name: 'member: 自身の参加申込内容更新 (uid不変) 許可 (要件3)',
+        ctx: { auth: authMember, path: 'communityEvents/c1/entries/e1', method: 'update', resource: { data: { uid: 'uid_member', note: '旧備考' } }, requestResource: { data: { uid: 'uid_member', note: '新備考' } } },
+        expected: true
+    },
+    {
+        name: 'member: 自身の参加申込更新時に uid を他人に変更試行するのを拒絶 (要件3: 所有者UID変更禁止)',
+        ctx: { auth: authMember, path: 'communityEvents/c1/entries/e1', method: 'update', resource: { data: { uid: 'uid_member' } }, requestResource: { data: { uid: 'uid_other' } } },
         expected: false
     },
     {

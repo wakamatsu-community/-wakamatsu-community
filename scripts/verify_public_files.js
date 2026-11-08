@@ -29,32 +29,14 @@ if (!fs.existsSync(eventsPath)) {
     const parsed = JSON.parse(raw);
     const events = Array.isArray(parsed) ? parsed : (parsed.events || []);
 
-    console.log(`[INFO] 検査件数: ${events.length} 件`);
+    console.log(`[INFO] 公開ファイル内の行事データ件数: ${events.length} 件`);
 
-    events.forEach((ev, idx) => {
-        // 会員限定行事の混入チェック
-        if (ev.isRestricted === true) {
-            console.error(`[FAIL] イベント[${idx}] "${ev.title}" は会員限定行事(isRestricted=true)ですが公開キャッシュに含まれています`);
-            hasError = true;
-        }
-        // 個人情報チェック
-        const piiFields = ['phone', 'tel', 'email', 'contact', 'applicant', 'realName', 'pin', 'author', 'userUid'];
-        piiFields.forEach(field => {
-            if (ev[field]) {
-                console.error(`[FAIL] イベント[${idx}] に個人情報フィールド "${field}" が含まれています: ${ev[field]}`);
-                hasError = true;
-            }
-        });
-        // 電話番号パターンの検知 (090-xxxx-xxxx 等)
-        const textStr = JSON.stringify(ev);
-        if (/0\d{1,4}-\d{1,4}-\d{4}/.test(textStr)) {
-            console.error(`[FAIL] イベント[${idx}] に電話番号パターンが検出されました: ${textStr}`);
-            hasError = true;
-        }
-    });
-
-    if (!hasError) {
-        console.log('[PASS] Docs/events.json に会員限定行事および個人情報は一切含まれていません');
+    // 要件1: B方式に合わせ、Docs/events.json の行事データが未ログインで直接閲覧できないよう空配列(0件)であること
+    if (events.length > 0) {
+        console.error(`[FAIL] Docs/events.json に ${events.length} 件の行事データが含まれています。B方式では未ログイン閲覧を遮断するため空配列でなければなりません。`);
+        hasError = true;
+    } else {
+        console.log('[PASS] Docs/events.json は空配列です（未ログイン利用者の直接閲覧完全遮断 PASS）');
     }
 }
 
