@@ -210,9 +210,8 @@ export const SITE_CONFIG = {
             sheetUrl: "https://docs.google.com/spreadsheets/d/sample-people-sheet-id/gviz/tq?tqx=out:json",
             editUrl: "https://docs.google.com/spreadsheets/d/sample-people-sheet-id/edit#gid=0",
             submitEndpoint: "https://script.google.com/macros/s/sample-people-script-id/exec",
-            mock: [
-                { name: "山田太郎", phone: "090-1234-5678", group: "1組1班", memo: "防災担当" }
-            ]
+            // 要件4: 公開静的ファイルから会員名簿・個人連絡先情報を完全除去
+            mock: []
         },
         equipmentLedger: {
             sheetUrl: "https://docs.google.com/spreadsheets/d/sample-ledger-sheet-id/gviz/tq?tqx=out:json",

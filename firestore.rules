@@ -52,14 +52,18 @@ service cloud.firestore {
     // ==========================================
 
     // 1. 会員プロファイル (users)
-    // 要件3 & 4: users/{uid}.role を認可に使用
+    // 要件1: 本人更新では role・username・管理用フィールド(email, permissions, isAdmin, isOfficer, status等)の変更を禁止
     // - 他人のプロファイル閲覧は禁止 (本人のみ閲覧可、管理者は監査可能)
-    // - 本人によるrole変更は禁止 (role値の一致を検証)
     // - roleの変更・新規付与・削除は管理者(admin)のみ可能
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
       allow create: if isAdmin();
-      allow update: if isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role);
+      allow update: if isAdmin() || (
+        isOwner(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'role', 'username', 'email', 'permissions', 'isAdmin', 'isOfficer', 'status'
+        ])
+      );
       allow delete: if isAdmin();
     }
 
@@ -75,10 +79,10 @@ service cloud.firestore {
     }
 
     // 3. 会員企画イベント (communityEvents)
-    // 要件1, 5, 11:
+    // 要件2: 申請者本人による更新では status を pending に固定し、organizerUid の変更を禁止
     // - 閲覧: 承認済み(approved)行事は全会員閲覧可。承認待ちは企画者本人と役員のみ
     // - 企画申請: 認証会員のみ許可。organizerUidの偽装禁止、初期statusは必ずpending
-    // - 更新: 役員、または企画者本人(pending中のみ)
+    // - 更新: 役員、または企画者本人(status=pending固定かつorganizerUid変更禁止)
     // - 削除: 役員のみ
     match /communityEvents/{eventId} {
       allow read: if (isMember() && resource.data.status == 'approved')
@@ -88,7 +92,11 @@ service cloud.firestore {
                     request.resource.data.organizerUid == request.auth.uid &&
                     request.resource.data.status == 'pending';
       allow update: if isOfficer() ||
-                    (isAuthenticated() && resource.data.organizerUid == request.auth.uid && resource.data.status == 'pending');
+                    (isAuthenticated() &&
+                     resource.data.organizerUid == request.auth.uid &&
+                     request.resource.data.organizerUid == resource.data.organizerUid &&
+                     resource.data.status == 'pending' &&
+                     request.resource.data.status == 'pending');
       allow delete: if isOfficer();
 
       // サブコレクション: 参加者台帳 (entries) - 個人情報保護
@@ -136,10 +144,10 @@ service cloud.firestore {
     }
 
     // 8. 備品予約台帳 (equipmentReservations)
-    // 要件1, 5, 11:
+    // 要件3: 本人取消では userUid と予約内容の変更を禁止し、status のみ cancelled に変更可能とする
     // - 閲覧: 空き状況確認のため認証済み会員に限定して読み取り許可
     // - 予約申請: 認証会員のみ許可。userUid偽装禁止、statusは必ずrequested
-    // - 更新: 役員、または予約者本人(statusをcancelledへ変更する取消のみ許可)
+    // - 更新: 役員、または予約者本人(userUid変更禁止、予約内容改ざん禁止、statusのみcancelled変更可)
     // - 削除: 役員・管理者のみ
     match /equipmentReservations/{reservationId} {
       allow read: if isMember();
@@ -147,7 +155,11 @@ service cloud.firestore {
                     request.resource.data.userUid == request.auth.uid &&
                     request.resource.data.status == 'requested';
       allow update: if isOfficer() ||
-                    (isAuthenticated() && resource.data.userUid == request.auth.uid && request.resource.data.status == 'cancelled');
+                    (isAuthenticated() &&
+                     resource.data.userUid == request.auth.uid &&
+                     request.resource.data.userUid == resource.data.userUid &&
+                     request.resource.data.status == 'cancelled' &&
+                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']));
       allow delete: if isOfficer();
     }
 
