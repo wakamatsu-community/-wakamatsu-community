@@ -33,10 +33,10 @@ function resolveEmailFromUserId(userId) {
 
 // 1. ユーザーID解決テスト
 console.log("--- 1. ユーザーID解決 (resolveEmailFromUserId) ---");
-assert.strictEqual(resolveEmailFromUserId("niina"), "niina@wakamatsu-cho.internal");
-assert.strictEqual(resolveEmailFromUserId("NIINA "), "niina@wakamatsu-cho.internal");
-assert.strictEqual(resolveEmailFromUserId("officer"), "officer@wakamatsu-cho.internal");
-assert.strictEqual(resolveEmailFromUserId("member"), "member@wakamatsu-cho.internal");
+assert.strictEqual(resolveEmailFromUserId("niina"), "niina@gmail.com");
+assert.strictEqual(resolveEmailFromUserId("NIINA "), "niina@gmail.com");
+assert.strictEqual(resolveEmailFromUserId("officer"), "officer@gmail.com");
+assert.strictEqual(resolveEmailFromUserId("member"), "member@gmail.com");
 assert.strictEqual(resolveEmailFromUserId("custom@example.com"), "custom@example.com");
 assert.strictEqual(resolveEmailFromUserId("unknown"), null);
 console.log("[PASS] ユーザーID解決の正常性確認完了\n");
@@ -52,7 +52,7 @@ function createMockAuthEnvironment({
 }) {
     let signedOutCalled = false;
     const mockUid = "test_uid_niina_12345";
-    const mockEmail = "niina@wakamatsu-cho.internal";
+    const mockEmail = "niina@gmail.com";
 
     const mockAuth = {
         currentUser: null
@@ -88,12 +88,13 @@ function createMockAuthEnvironment({
                 message: `ユーザーID「${userId}」は登録されていません。(利用可能なID: niina, officer, member)`
             };
         }
-        if (!password) {
+        const pwd = String(password ?? "");
+        if (!pwd) {
             return { ok: false, errorType: "EMPTY_PASSWORD", message: "パスワードを入力してください。" };
         }
 
         try {
-            const userCred = await mockSignIn(mockAuth, email, password);
+            const userCred = await mockSignIn(mockAuth, email, pwd);
             const user = userCred.user;
 
             // getCurrentUserProfile のシミュレーション
