@@ -1,6 +1,356 @@
 {
-  "generated": "2026-11-08T14:50:00+09:00",
-  "events": [],
-  "policy": "B-MODE-AUTHENTICATED-ONLY",
-  "note": "若松町内会HP B方式: 全業務データはFirebase Authentication認証済み会員に限定して配信されます。未ログインでの直接閲覧はできません。"
+  "generated": "2026-11-08T07:00:46.230256+00:00",
+  "fingerprint": "bb5d7b2f3e3eb2ae63a47fc36201fc96c64c71d99b9216e12b02960ff7e3d612",
+  "events": [
+    {
+      "id": "EV-1781395200000-256",
+      "title": "水野公園清掃活動",
+      "start": "2026-06-14T08:00:00+09:00",
+      "end": "",
+      "place": "水野公園・第2緑地公園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1783814400000-943",
+      "title": "水野公園清掃活動",
+      "start": "2026-07-12T08:00:00+09:00",
+      "end": "",
+      "place": "水野公園・第2緑地公園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1786233600000-433",
+      "title": "水野公園清掃活動",
+      "start": "2026-08-09T08:00:00+09:00",
+      "end": "",
+      "place": "水野公園・第2緑地公園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1789257600000-312",
+      "title": "水野公園清掃活動",
+      "start": "2026-09-13T08:00:00+09:00",
+      "end": "",
+      "place": "水野公園・第2緑地公園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1794096000000-493",
+      "title": "水野公園清掃活動",
+      "start": "2026-11-08T08:00:00+09:00",
+      "end": "",
+      "place": "水野公園・第2緑地公園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1797120000000-108",
+      "title": "水野公園清掃活動",
+      "start": "2026-12-13T08:00:00+09:00",
+      "end": "",
+      "place": "水野公園・第2緑地公園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1799539200000-658",
+      "title": "水野公園清掃活動",
+      "start": "2027-01-10T08:00:00+09:00",
+      "end": "",
+      "place": "水野公園・第2緑地公園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1802563200000-191",
+      "title": "水野公園清掃活動",
+      "start": "2027-02-14T08:00:00+09:00",
+      "end": "",
+      "place": "水野公園・第2緑地公園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1804982400000-412",
+      "title": "水野公園清掃活動",
+      "start": "2027-03-14T08:00:00+09:00",
+      "end": "",
+      "place": "水野公園・第2緑地公園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1807401600000-643",
+      "title": "水野公園清掃活動",
+      "start": "2027-04-11T08:00:00+09:00",
+      "end": "",
+      "place": "水野公園・第2緑地公園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1809820800000-277",
+      "title": "水野公園清掃活動",
+      "start": "2027-05-09T08:00:00+09:00",
+      "end": "",
+      "place": "水野公園・第2緑地公園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1782604800000-639",
+      "title": "バラ園管理",
+      "start": "2026-06-28T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1785024000000-979",
+      "title": "バラ園管理",
+      "start": "2026-07-26T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1787443200000-117",
+      "title": "バラ園管理",
+      "start": "2026-08-23T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1790467200000-334",
+      "title": "バラ園管理",
+      "start": "2026-09-27T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1792886400000-85",
+      "title": "バラ園管理",
+      "start": "2026-10-25T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1795305600000-868",
+      "title": "バラ園管理",
+      "start": "2026-11-22T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1798329600000-598",
+      "title": "バラ園管理",
+      "start": "2026-12-27T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1800748800000-200",
+      "title": "バラ園管理",
+      "start": "2027-01-24T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1803772800000-66",
+      "title": "バラ園管理",
+      "start": "2027-02-28T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1806192000000-122",
+      "title": "バラ園管理",
+      "start": "2027-03-28T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1808611200000-512",
+      "title": "バラ園管理",
+      "start": "2027-04-25T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1811030400000-651",
+      "title": "バラ園管理",
+      "start": "2027-05-23T09:00:00+09:00",
+      "end": "",
+      "place": "バラ園",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1780704000000-806",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2026-06-06T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1783123200000-206",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2026-07-04T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1785542400000-276",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2026-08-01T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1788566400000-159",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2026-09-05T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1790985600000-402",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2026-10-03T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1794009600000-409",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2026-11-07T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1796428800000-871",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2026-12-05T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1798848000000-543",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2027-01-02T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1801872000000-615",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2027-02-06T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1804291200000-972",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2027-03-06T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1806710400000-433",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2027-04-03T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    },
+    {
+      "id": "EV-1809129600000-264",
+      "title": "情報交換会（なんでも相談室）",
+      "start": "2027-05-01T09:00:00+09:00",
+      "end": "",
+      "place": "若松町集会所",
+      "description": "",
+      "category": "町内行事",
+      "allDay": false
+    }
+  ]
 }
