@@ -1,12 +1,7 @@
 name: Sync Google Calendar to GitHub Pages
 
 on:
-  schedule:
-    - cron: '0 21 * * *' # 日本時間の毎朝6時に自動実行
-  workflow_dispatch:     # GitHubの画面から手動で実行できるようにする設定
-  push:
-    branches:
-      - main             # コードをGitHubにアップ（push）した時にも自動実行
+  workflow_dispatch:     # B方式(全業務データ認証制)のため手動実行のみに制限 (pushや定期実行による公開JSONの意図しない上書きを防止)
 
 permissions:
   contents: write
