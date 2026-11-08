@@ -92,19 +92,26 @@ export async function getCurrentUserProfile() {
         const userDocSnap = await getDoc(userDocRef);
         if (userDocSnap.exists()) {
             const data = userDocSnap.data() || {};
-            // users/{uid}.role のみを厳密に参照
-            const role = String(data.role || "guest").trim().toLowerCase();
+            // users/{uid}.role のみを厳密に参照 (日本語フィールドや大文字表記にも安全にフォールバック)
+            const rawRole = data.role || data.Role || data.役職 || data.ロール || "guest";
+            let role = String(rawRole).trim().toLowerCase();
+            if (role === "管理者" || role === "システム管理者") role = "admin";
+            else if (role === "役員") role = "officer";
+            else if (role === "会員" || role === "一般会員" || role === "町内会員") role = "member";
+
             const isAdmin = role === "admin";
             const isOfficer = role === "officer" || isAdmin;
             const isMember = role === "member" || isOfficer;
+
+            const name = data.name || data.displayName || data.username || data.氏名 || data.名前 || user.displayName || user.email;
 
             return {
                 user,
                 uid: user.uid,
                 email: user.email,
                 role,
-                name: data.name || data.username || user.displayName || user.email,
-                group: data.group || "",
+                name,
+                group: data.group || data.組 || "",
                 isAdmin,
                 isOfficer,
                 isMember,

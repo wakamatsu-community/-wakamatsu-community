@@ -359,9 +359,9 @@ function showLoginGate(errorMessage = null) {
                 submitBtn.textContent = "ログイン";
                 return;
             }
-            // 認証＆権限確認が完了したため、ゲートを非表示にして画面を初期化
-            hideLoginGate();
-            await initializePageContent(document.body.dataset.page);
+            // 認証＆権限確認が完了したため、ゲートを非表示にして安全に画面を初期化
+            submitBtn.textContent = "ログイン成功！読み込み中...";
+            await safeInitializePage(document.body.dataset.page);
         } catch (err) {
             errorEl.textContent = err.message || "通信エラーが発生しました。もう一度お試しください。";
             errorEl.style.display = "block";
@@ -369,6 +369,15 @@ function showLoginGate(errorMessage = null) {
             submitBtn.textContent = "ログイン";
         }
     });
+}
+
+let isPageInitialized = false;
+
+async function safeInitializePage(page) {
+    if (isPageInitialized) return;
+    isPageInitialized = true;
+    hideLoginGate();
+    await initializePageContent(page);
 }
 
 function hideLoginGate() {
@@ -415,15 +424,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         } catch {}
 
         if (mockUser && (mockUser.role === "member" || mockUser.role === "officer" || mockUser.role === "admin")) {
-            hideLoginGate();
-            await initializePageContent(page);
+            await safeInitializePage(page);
             return;
         }
 
         if (isFirebaseReady && auth) {
             onAuthStateChanged(auth, async (user) => {
                 if (!user) {
-                    // 未ログイン: ログイン画面だけを表示 (要件2)
+                    // 未ログイン: 初期化フラグをリセットしログイン画面を表示 (要件2)
+                    isPageInitialized = false;
                     showLoginGate();
                     return;
                 }
@@ -431,6 +440,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                 // ログイン中: 権限を厳密確認 (要件4)
                 const profile = await getCurrentUserProfile();
                 if (!profile || !profile.isMember) {
+                    isPageInitialized = false;
                     let detailMsg = "会員登録が確認できませんでした。管理者にお問い合わせください。";
                     if (profile) {
                         if (profile.status === "NOT_FOUND" || !profile.docExists) {
@@ -445,9 +455,8 @@ document.addEventListener("DOMContentLoaded", async () => {
                     return;
                 }
 
-                // 認証成功: ゲートを解除して初めて業務画面を初期化 (要件7)
-                hideLoginGate();
-                await initializePageContent(page);
+                // 認証成功: ゲートを解除して安全に業務画面を初期化 (要件7)
+                await safeInitializePage(page);
             });
             return;
         } else {
