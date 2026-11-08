@@ -71,30 +71,8 @@ export const SITE_CONFIG = {
             { id: "generator", label: "発電機", stock: 2, aliases: ["はつでんき", "電源"] },
             { id: "mower", label: "草刈機", stock: 2, aliases: ["くさかり", "草刈り機"] }
         ],
-        mockReservations: [
-            {
-                id: "R-1001",
-                equipmentId: "tent",
-                equipmentLabel: "テント",
-                name: "田中一郎",
-                phone: "090-1111-2222",
-                group: "1組2班",
-                loanDate: "2026-06-08",
-                returnDate: "2026-06-10",
-                createdAt: "2026-06-01T09:00:00.000Z"
-            },
-            {
-                id: "R-1002",
-                equipmentId: "generator",
-                equipmentLabel: "発電機",
-                name: "佐藤花子",
-                phone: "090-3333-4444",
-                group: "3組1班",
-                loanDate: "2026-06-12",
-                returnDate: "2026-06-13",
-                createdAt: "2026-06-02T11:30:00.000Z"
-            }
-        ]
+        // 要件6 & 10: 公開静的ファイルから個人情報を完全除去 (Firestore equipmentReservations より取得)
+        mockReservations: []
     },
 
     // ------------------------------------------------------------------
@@ -232,9 +210,8 @@ export const SITE_CONFIG = {
             sheetUrl: "https://docs.google.com/spreadsheets/d/sample-people-sheet-id/gviz/tq?tqx=out:json",
             editUrl: "https://docs.google.com/spreadsheets/d/sample-people-sheet-id/edit#gid=0",
             submitEndpoint: "https://script.google.com/macros/s/sample-people-script-id/exec",
-            mock: [
-                { name: "山田太郎", phone: "090-1234-5678", group: "1組1班", memo: "防災担当" }
-            ]
+            // 要件4: 公開静的ファイルから会員名簿・個人連絡先情報を完全除去
+            mock: []
         },
         equipmentLedger: {
             sheetUrl: "https://docs.google.com/spreadsheets/d/sample-ledger-sheet-id/gviz/tq?tqx=out:json",

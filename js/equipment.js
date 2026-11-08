@@ -121,7 +121,17 @@ async function loadReservationItems(config) {
                 });
             });
             if (list.length > 0) {
-                localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify(list));
+                // 要件10: ローカルキャッシュには個人情報(氏名・電話等)を含めず、空き台数計算に必要な情報のみ保存
+                const sanitizedForCache = list.map((item) => ({
+                    recordId: item.recordId,
+                    equipmentId: item.equipmentId,
+                    equipmentLabel: item.equipmentLabel,
+                    quantity: item.quantity,
+                    loanDate: item.loanDate,
+                    returnDate: item.returnDate,
+                    status: item.status
+                }));
+                localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify(sanitizedForCache));
                 return list;
             }
         } catch (err) {
@@ -234,9 +244,12 @@ async function executeReservationTransaction(applicant, phone, group, items) {
             }
         }
 
-        // 4. アトミックに予約を作成
+        // 4. アトミックに予約を作成 (要件11: ログインユーザーUIDの厳格照合)
+        const userUid = auth?.currentUser?.uid;
+        if (!userUid) {
+            throw new Error("備品の予約申請を行うにはログインが必要です。");
+        }
         const createdIds = [];
-        const userUid = auth?.currentUser?.uid || "guest";
 
         for (const item of items) {
             const newDocRef = doc(collection(db, "equipmentReservations"));

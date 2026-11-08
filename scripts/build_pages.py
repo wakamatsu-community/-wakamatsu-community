@@ -21,6 +21,7 @@ IGNORED_DIRS = {
     "secrets",
     "venv",
     ".venv",
+    "node_modules",
 }
 IGNORED_FILES = {
     ".env",
@@ -78,6 +79,14 @@ def should_ignore(path: Path) -> bool:
     return False
 
 
+def safe_copy(src: Path, dst: Path) -> None:
+    try:
+        shutil.copy2(src, dst)
+    except Exception:
+        with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+
+
 def copy_workspace() -> None:
     if DIST.exists():
         shutil.rmtree(DIST)
@@ -92,10 +101,11 @@ def copy_workspace() -> None:
             shutil.copytree(
                 item,
                 target,
+                copy_function=safe_copy,
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
             )
         else:
-            shutil.copy2(item, target)
+            safe_copy(item, target)
 
 
 def inject_runtime_config() -> None:
@@ -122,6 +132,18 @@ def inject_runtime_config() -> None:
         + "const runtime = (typeof window !== \"undefined\" && window.RUNTIME_CONFIG)\n"
         + "    ? window.RUNTIME_CONFIG\n"
         + "    : {};\n\n"
+        + "const defaultUserMap = {\n"
+        + "    niina: \"niina@wakamatsu-cho.internal\",\n"
+        + "    officer: \"officer@wakamatsu-cho.internal\",\n"
+        + "    member: \"member@wakamatsu-cho.internal\"\n"
+        + "};\n"
+        + "const customUserMap = (typeof runtime.AUTH_USER_MAP === \"object\" && runtime.AUTH_USER_MAP !== null)\n"
+        + "    ? runtime.AUTH_USER_MAP\n"
+        + "    : {};\n\n"
+        + "export const AUTH_USER_MAP = Object.freeze({\n"
+        + "    ...defaultUserMap,\n"
+        + "    ...customUserMap\n"
+        + "});\n\n"
         + "export const RUNTIME_CONFIG = Object.freeze(runtime);\n"
     )
     runtime_config_path.write_text(content, encoding="utf-8")

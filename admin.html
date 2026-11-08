@@ -30,20 +30,45 @@
 
         <main class="section-stack">
             <section class="card admin-login-section">
-                <h1>管理ページ（GAS連携）</h1>
-                <p>公開運用のため、役員アカウントでのPINログインが必要です。</p>
-                <p class="note">フロントエンドには API キーやサービスアカウント情報を保持しません。</p>
-                <form id="admin-login-form" class="inline-form">
-                    <label>ユーザーID（メール等）
-                        <input name="userId" type="text" autocomplete="username" required>
+                <h1>若松町内会 会員・管理者ログイン</h1>
+                <p>Firebase Authenticationによる安全な認証を採用しています。メールアドレスの入力は不要です。</p>
+
+                <!-- 統一ログインフォーム (ユーザーID + パスワード) -->
+                <form id="unified-login-form" class="inline-form" style="margin-top:12px;">
+                    <label>ユーザーID
+                        <input name="userId" type="text" autocomplete="username" placeholder="例: member, officer, niina" required autofocus>
                     </label>
-                    <label>PIN（4桁）
-                        <input name="pin" type="password" autocomplete="current-password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
+                    <label>パスワード
+                        <input name="password" type="password" autocomplete="current-password" placeholder="パスワード（または合言葉）" required>
                     </label>
                     <button class="button" type="submit">ログイン</button>
-                    <p id="admin-login-status" class="note" aria-live="polite"></p>
-                    <p id="admin-current-role" class="note" aria-live="polite"></p>
+                    <div class="note" style="margin-top:8px; line-height:1.6;">
+                        <strong>【利用可能なユーザーID】</strong><br>
+                        ・ <strong>member</strong>: 一般会員共通（閲覧専用 / パスワード欄に町内会合言葉を入力）<br>
+                        ・ <strong>officer</strong>: 役員共通（行事管理・写真承認・備品確認）<br>
+                        ・ <strong>niina</strong>: システム管理者（特権管理・ロール監査）
+                    </div>
                 </form>
+
+                <!-- ログイン状態表示 & 操作 -->
+                <div id="auth-status-container" style="margin-top:16px;">
+                    <p id="admin-login-status" class="note" aria-live="polite"></p>
+                    <div id="logged-in-panel" class="hidden" style="margin-top:10px; padding:12px; border:1px solid #d9e2ef; border-radius:8px; background:#f8fafc;">
+                        <p id="admin-current-role" style="font-weight:bold; color:#247246; margin-bottom:8px;"></p>
+                        <div class="button-row" style="gap:10px; flex-wrap:wrap;">
+                            <button id="auth-logout-btn" class="button danger" type="button" style="padding:6px 14px;">ログアウト</button>
+                            <button id="auth-password-change-toggle" class="button" type="button" style="padding:6px 14px; background:#5f6f68;">パスワード変更</button>
+                        </div>
+                        <!-- パスワード変更サブフォーム (役員・管理者用) -->
+                        <form id="auth-password-change-form" class="inline-form hidden" style="margin-top:12px; border-top:1px dashed #cbd5e1; padding-top:12px;">
+                            <label>新しいパスワード（8文字以上）
+                                <input name="newPassword" type="password" required minlength="8">
+                            </label>
+                            <button class="button" type="submit">変更を保存</button>
+                            <p id="auth-password-change-status" class="note" aria-live="polite"></p>
+                        </form>
+                    </div>
+                </div>
             </section>
 
             <div id="admin-protected" class="hidden">

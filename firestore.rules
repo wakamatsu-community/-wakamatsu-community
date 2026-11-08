@@ -1,0 +1,189 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==========================================
+    // 1. 認証・ロール判定ヘルパー関数 (B方式)
+    // 要件4: Firestore users/{uid}.role を唯一の権限判定元とする。
+    // ==========================================
+
+    // 認証済みか (Firebase Authentication トークンを所持)
+    function isAuthenticated() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    // users コレクションにプロファイルが存在するか
+    function hasUserDoc() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    // users コレクションから role を取得
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    // システム管理者 (admin: niina) 判定
+    function isAdmin() {
+      return hasUserDoc() && getUserRole() == 'admin';
+    }
+
+    // 役員 (officer) または システム管理者 (admin) 判定
+    function isOfficer() {
+      return hasUserDoc() && (getUserRole() == 'officer' || getUserRole() == 'admin');
+    }
+
+    // 正当な町内会員 (member, officer, admin) 判定
+    function isMember() {
+      return hasUserDoc() && (
+        getUserRole() == 'member' ||
+        getUserRole() == 'officer' ||
+        getUserRole() == 'admin'
+      );
+    }
+
+    // 本人判定
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    // ==========================================
+    // 2. コレクション別アクセス制御ルール (B方式: 全業務データ認証限定)
+    // ==========================================
+
+    // 1. 会員プロファイル (users)
+    // 要件2: 本人更新を変更可能な項目だけを許可する方式(hasOnly())に変更
+    // - 本人が更新可能な項目: name, displayName, phone, group, updatedAt のみ
+    // - role, username, email, permissions 等の改ざんは完全遮断
+    // - roleの変更・新規付与・削除は管理者(admin)のみ可能
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAdmin();
+      allow update: if isAdmin() || (
+        isOwner(userId) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'name', 'displayName', 'phone', 'group', 'updatedAt'
+        ])
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 2. 町内会公式行事 (events)
+    // 要件1 & 5: 未ログイン閲覧不可。認証済み会員に限定
+    // - 認証済み会員: status が published の行事を閲覧可
+    // - 役員・管理者: 下書き(draft)含む全件閲覧可
+    // - 作成・変更・削除は役員・管理者のみ (一般会員は閲覧専用)
+    match /events/{eventId} {
+      allow read: if (isMember() && resource.data.status == 'published')
+                  || isOfficer();
+      allow write: if isOfficer();
+    }
+
+    // 3. 会員企画イベント (communityEvents)
+    // 要件2: 申請者本人による更新では status を pending に固定し、organizerUid の変更を禁止
+    // - 閲覧: 承認済み(approved)行事は全会員閲覧可。承認待ちは企画者本人と役員のみ
+    // - 企画申請: 認証会員のみ許可。organizerUidの偽装禁止、初期statusは必ずpending
+    // - 更新: 役員、または企画者本人(status=pending固定かつorganizerUid変更禁止)
+    // - 削除: 役員のみ
+    match /communityEvents/{eventId} {
+      allow read: if (isMember() && resource.data.status == 'approved')
+                  || (isAuthenticated() && resource.data.organizerUid == request.auth.uid)
+                  || isOfficer();
+      allow create: if isMember() &&
+                    request.resource.data.organizerUid == request.auth.uid &&
+                    request.resource.data.status == 'pending';
+      allow update: if isOfficer() ||
+                    (isAuthenticated() &&
+                     resource.data.organizerUid == request.auth.uid &&
+                     request.resource.data.organizerUid == resource.data.organizerUid &&
+                     resource.data.status == 'pending' &&
+                     request.resource.data.status == 'pending');
+      allow delete: if isOfficer();
+
+      // サブコレクション: 参加者台帳 (entries) - 個人情報保護
+      // 要件3: 本人が所有者UID(uid)を変更できないようにする (他人の台帳閲覧・改ざん完全遮断)
+      match /entries/{entryId} {
+        allow read: if isOfficer() ||
+                    (isAuthenticated() && resource.data.uid == request.auth.uid);
+        allow create: if isMember() && request.resource.data.uid == request.auth.uid;
+        allow update: if isOfficer() ||
+                      (isAuthenticated() &&
+                       resource.data.uid == request.auth.uid &&
+                       request.resource.data.uid == resource.data.uid);
+        allow delete: if isOfficer() ||
+                      (isAuthenticated() && resource.data.uid == request.auth.uid);
+      }
+    }
+
+    // 4. 既存企画アーカイブ (eventPlanning)
+    // 役員会での企画検討アーカイブ。役員・管理者のみアクセス可
+    match /eventPlanning/{docId} {
+      allow read, write: if isOfficer();
+    }
+
+    // 5. 回覧板・資料室 (documents)
+    // 要件1 & 5: 未ログインは全資料閲覧不可。認証済み会員に限定
+    // - 作成・更新・削除は役員・管理者のみ
+    match /documents/{docId} {
+      allow read: if isMember();
+      allow write: if isOfficer();
+    }
+
+    // 6. 写真アルバム (photos)
+    // 要件1 & 5: 肖像権保護。未ログイン閲覧不可。認証済み会員に限定
+    // - 閲覧: 承認済み写真は全会員閲覧可
+    // - 投稿申請: 認証会員のみ許可 (status == 'pending')
+    // - 承認・削除: 役員・管理者のみ
+    match /photos/{photoId} {
+      allow read: if (isMember() && resource.data.status == 'approved')
+                  || isOfficer();
+      allow create: if isMember() && request.resource.data.status == 'pending';
+      allow update, delete: if isOfficer();
+    }
+
+    // 7. 備品マスタ (equipmentMaster)
+    // 要件1: 認証済み会員のみ閲覧可。更新は役員・管理者のみ
+    match /equipmentMaster/{equipmentId} {
+      allow read: if isMember();
+      allow write: if isOfficer();
+    }
+
+    // 8. 備品予約台帳 (equipmentReservations)
+    // 要件3: 本人取消では userUid と予約内容の変更を禁止し、status のみ cancelled に変更可能とする
+    // - 閲覧: 空き状況確認のため認証済み会員に限定して読み取り許可
+    // - 予約申請: 認証会員のみ許可。userUid偽装禁止、statusは必ずrequested
+    // - 更新: 役員、または予約者本人(userUid変更禁止、予約内容改ざん禁止、statusのみcancelled変更可)
+    // - 削除: 役員・管理者のみ
+    match /equipmentReservations/{reservationId} {
+      allow read: if isMember();
+      allow create: if isMember() &&
+                    request.resource.data.userUid == request.auth.uid &&
+                    request.resource.data.status == 'requested';
+      allow update: if isOfficer() ||
+                    (isAuthenticated() &&
+                     resource.data.userUid == request.auth.uid &&
+                     request.resource.data.userUid == resource.data.userUid &&
+                     request.resource.data.status == 'cancelled' &&
+                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']));
+      allow delete: if isOfficer();
+    }
+
+    // 9. 意見交換・相談 (opinions)
+    // 要件1, 5, 11:
+    // - 閲覧: 公開意見は全会員閲覧可。非公開相談は本人または役員のみ
+    // - 送信: 認証会員のみ許可。userUid偽装禁止
+    // - 回答記入・ステータス更新: 役員・管理者のみ
+    match /opinions/{opinionId} {
+      allow read: if (isMember() && resource.data.isPublic == true) ||
+                  (isAuthenticated() && resource.data.userUid == request.auth.uid) ||
+                  isOfficer();
+      allow create: if isMember() && request.resource.data.userUid == request.auth.uid;
+      allow update, delete: if isOfficer();
+    }
+
+    // 10. 未定義コレクションは原則拒否 (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

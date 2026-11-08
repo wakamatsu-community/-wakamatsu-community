@@ -6,7 +6,7 @@
  * 公開用設定（APIキー等）のみを使用し、秘密鍵は一切含みません。
  */
 
-import { RUNTIME_CONFIG } from "./runtime-config.js";
+import { RUNTIME_CONFIG, AUTH_USER_MAP } from "./runtime-config.js";
 
 // Firebase Web SDK v10 (ES Modules via gstatic CDN)
 import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
@@ -15,7 +15,8 @@ import {
     onAuthStateChanged,
     signInWithEmailAndPassword,
     signOut,
-    createUserWithEmailAndPassword
+    createUserWithEmailAndPassword,
+    updatePassword
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
     initializeFirestore,
@@ -73,38 +74,249 @@ try {
  * 現在のログインユーザーとロール情報を取得する
  * @returns {Promise<{ user: any, role: string, name: string } | null>}
  */
+/**
+ * 現在のログインユーザーとロール情報を取得する
+ * 要件4: Firestore users/{uid}.role を唯一の権限判定元とする。
+ * メールアドレスからadmin/officer権限を推定する処理は完全に排除します。
+ * @returns {Promise<{ user: any, role: string, name: string, isAdmin: boolean, isOfficer: boolean, isMember: boolean, isCommonMember: boolean, canManage: boolean } | null>}
+ */
 export async function getCurrentUserProfile() {
     if (!firebaseAuth || !firebaseAuth.currentUser || !firestoreDb) {
         return null;
     }
 
     const user = firebaseAuth.currentUser;
+
     try {
         const userDocRef = doc(firestoreDb, "users", user.uid);
         const userDocSnap = await getDoc(userDocRef);
         if (userDocSnap.exists()) {
-            const data = userDocSnap.data();
+            const data = userDocSnap.data() || {};
+            // users/{uid}.role のみを厳密に参照
+            const role = String(data.role || "guest").trim().toLowerCase();
+            const isAdmin = role === "admin";
+            const isOfficer = role === "officer" || isAdmin;
+            const isMember = role === "member" || isOfficer;
+
             return {
                 user,
                 uid: user.uid,
                 email: user.email,
-                role: data.role || "member",
-                name: data.name || user.displayName || user.email,
-                group: data.group || ""
+                role,
+                name: data.name || data.username || user.displayName || user.email,
+                group: data.group || "",
+                isAdmin,
+                isOfficer,
+                isMember,
+                isCommonMember: role === "member",
+                canManage: isOfficer
             };
         }
     } catch (err) {
-        console.warn("[Firebase] ユーザープロファイル取得失敗:", err);
+        console.warn("[Firebase] users/{uid} プロファイル照会例外:", err);
     }
 
+    // usersドキュメントが存在しない、または未登録の場合は一切の会員・管理権限を与えない (要件4)
     return {
         user,
         uid: user.uid,
         email: user.email,
-        role: "member",
-        name: user.displayName || user.email,
-        group: ""
+        role: "guest",
+        name: user.displayName || user.email || "未登録ユーザー",
+        group: "",
+        isAdmin: false,
+        isOfficer: false,
+        isMember: false,
+        isCommonMember: false,
+        canManage: false
     };
+}
+
+/**
+ * 要件3: ユーザーIDを正規化し、設定ファイルからFirebase登録用メールアドレスを取得
+ * ユーザーにはメールアドレスを入力させず、IDから安全に変換します。
+ */
+export function resolveEmailFromUserId(userId) {
+    const raw = String(userId || "").trim();
+    if (!raw) return null;
+    if (raw.includes("@")) {
+        return raw; // メールアドレス直接入力との互換性
+    }
+    const normalized = raw.toLowerCase();
+    return AUTH_USER_MAP[normalized] || null;
+}
+
+/**
+ * 要件2, 5, 6: ユーザーID＋パスワードによるFirebase Authenticationログイン
+ * メールアドレスを入力させず、従来のGASと同じ「ユーザーID＋パスワード」で認証します。
+ * 認証成功後は入力IDではなく、Firebase UIDとFirestoreプロファイルに基づいて権限を厳密判定します。
+ *
+ * @param {string} userId ユーザーID (niina, officer, member)
+ * @param {string} password パスワード (または共通合言葉)
+ */
+export async function signInWithUserId(userId, password) {
+    if (!firebaseAuth) {
+        return { ok: false, errorType: "UNCONFIGURED", message: "Firebase Authが初期化されていません。" };
+    }
+
+    const email = resolveEmailFromUserId(userId);
+    if (!email) {
+        return {
+            ok: false,
+            errorType: "INVALID_USER_ID",
+            message: `ユーザーID「${userId}」は登録されていません。(利用可能なID: niina, officer, member)`
+        };
+    }
+
+    const pwd = String(password || "").trim();
+    if (!pwd) {
+        return { ok: false, errorType: "EMPTY_PASSWORD", message: "パスワードを入力してください。" };
+    }
+
+    try {
+        const userCredential = await signInWithEmailAndPassword(firebaseAuth, email, pwd);
+        // 要件6: 入力されたユーザーIDではなくFirebase UIDに基づいて権限を判定
+        const profile = await getCurrentUserProfile();
+
+        return {
+            ok: true,
+            user: userCredential.user,
+            uid: userCredential.user.uid,
+            profile,
+            role: profile?.role || "member",
+            canManage: Boolean(profile?.canManage)
+        };
+    } catch (err) {
+        const code = err.code || "";
+        let message = "ユーザーIDまたはパスワードが正しくありません。";
+        if (code === "auth/user-not-found") {
+            message = `アカウント「${userId}」がFirebase Authenticationに未作成です。(Firebase Consoleで手動作成が必要です)`;
+        } else if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
+            message = "パスワードが正しくありません。";
+        } else if (code === "auth/too-many-requests") {
+            message = "ログイン試行回数が多すぎます。しばらく時間をおいてから再度お試しください。";
+        }
+        return {
+            ok: false,
+            errorType: code || "AUTH_FAILED",
+            message
+        };
+    }
+}
+
+/**
+ * 要件1 & 5: 町内会共通合言葉によるサーバー側安全認証 (閲覧専用)
+ */
+export async function signInWithMemberPasscode(passcode, customEmail = null) {
+    if (!firebaseAuth) {
+        return { ok: false, errorType: "UNCONFIGURED", message: "Firebase Authが初期化されていません。" };
+    }
+    const memberEmail = customEmail || RUNTIME_CONFIG.MEMBER_AUTH_EMAIL || "member@wakamatsu-cho.internal";
+    try {
+        const userCredential = await signInWithEmailAndPassword(firebaseAuth, memberEmail, passcode);
+        return {
+            ok: true,
+            user: userCredential.user,
+            role: "member"
+        };
+    } catch (err) {
+        const code = err.code || "";
+        let message = "合言葉が正しくありません。町内会報記載の合言葉を確認してください。";
+        if (code === "auth/user-not-found") {
+            message = "共通会員アカウントがFirebase Authenticationに未作成です。(Firebase Consoleで設定が必要です)";
+        }
+        return {
+            ok: false,
+            errorType: code || "AUTH_FAILED",
+            message
+        };
+    }
+}
+
+/**
+ * 要件2 & 5: 役員・システム管理者による個別認証 (管理操作権限)
+ */
+export async function signInWithOfficerCredentials(email, password) {
+    if (!firebaseAuth) {
+        return { ok: false, errorType: "UNCONFIGURED", message: "Firebase Authが初期化されていません。" };
+    }
+    try {
+        const userCredential = await signInWithEmailAndPassword(firebaseAuth, email, password);
+        const profile = await getCurrentUserProfile();
+        if (!profile || (!profile.isOfficer && !profile.isAdmin)) {
+            // 役員権限がない場合は警告
+            return {
+                ok: true,
+                user: userCredential.user,
+                profile,
+                warning: "一般会員アカウントです。管理操作を行うには役員権限が必要です。"
+            };
+        }
+        return {
+            ok: true,
+            user: userCredential.user,
+            profile
+        };
+    } catch (err) {
+        const code = err.code || "";
+        let message = "メールアドレスまたはパスワードが正しくありません。";
+        if (code === "auth/user-not-found") {
+            message = "指定された役員アカウントが存在しません。";
+        } else if (code === "auth/wrong-password") {
+            message = "パスワードが正しくありません。";
+        }
+        return {
+            ok: false,
+            errorType: code || "AUTH_FAILED",
+            message
+        };
+    }
+}
+
+/**
+ * 要件10: ログアウト処理 (ローカルキャッシュ完全消去)
+ */
+export async function signOutUser() {
+    if (!firebaseAuth) return { ok: true };
+    try {
+        await signOut(firebaseAuth);
+        // 要件10: ブラウザのローカルキャッシュから会員情報・予約台帳を完全消去
+        try {
+            if (typeof localStorage !== "undefined") localStorage.clear();
+            if (typeof sessionStorage !== "undefined") sessionStorage.clear();
+        } catch (storageErr) {
+            console.warn("[Firebase] キャッシュクリア失敗:", storageErr);
+        }
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, error: err };
+    }
+}
+
+/**
+ * 要件5: 役員・管理者のパスワード変更
+ */
+export async function updateUserPassword(newPassword) {
+    if (!firebaseAuth || !firebaseAuth.currentUser) {
+        return { ok: false, message: "ログインしていません。" };
+    }
+    if (firebaseAuth.currentUser.email && firebaseAuth.currentUser.email.includes("member@")) {
+        return { ok: false, message: "共通会員アカウントのパスワードは管理コンソールからのみ変更できます。" };
+    }
+    if (!newPassword || newPassword.length < 8) {
+        return { ok: false, message: "パスワードは8文字以上の英数記号で指定してください。" };
+    }
+    try {
+        await updatePassword(firebaseAuth.currentUser, newPassword);
+        return { ok: true, message: "パスワードを変更しました。" };
+    } catch (err) {
+        const code = err.code || "";
+        let message = "パスワード変更に失敗しました。";
+        if (code === "auth/requires-recent-login") {
+            message = "セキュリティのため、再ログインしてから再度変更をお試しください。";
+        }
+        return { ok: false, errorType: code, message };
+    }
 }
 
 export {

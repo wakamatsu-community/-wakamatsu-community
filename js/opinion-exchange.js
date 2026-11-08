@@ -56,7 +56,9 @@ function loadLocalOpinions() {
 }
 
 function saveLocalOpinions(opinions) {
-    localStorage.setItem(OPINION_STORE_KEY, JSON.stringify(opinions));
+    // 要件10: 非公開相談はローカルキャッシュに保存せず、公開意見のみを安全に保持
+    const publicOnly = (opinions || []).filter((op) => op.isPublic !== false);
+    localStorage.setItem(OPINION_STORE_KEY, JSON.stringify(publicOnly));
 }
 
 function formatDate(value) {
@@ -182,10 +184,14 @@ function renderOpinionEntries(listEl, opinions) {
 }
 
 /**
- * 意見の新規送信
+ * 意見の新規送信 (要件11: ログインユーザーUIDの厳格照合)
  */
 export async function submitOpinion(record, photoFile = null) {
     if (isFirebaseReady && db) {
+        const userUid = auth?.currentUser?.uid;
+        if (!userUid) {
+            return { ok: false, error: "ご意見・ご相談の送信にはログインが必要です。" };
+        }
         try {
             await addDoc(collection(db, "opinions"), {
                 name: record.name || "匿名",
@@ -195,7 +201,7 @@ export async function submitOpinion(record, photoFile = null) {
                 status: "未確認",
                 reply: "",
                 answered: false,
-                userUid: auth?.currentUser?.uid || "guest",
+                userUid,
                 createdAt: new Date(),
                 updatedAt: new Date()
             });

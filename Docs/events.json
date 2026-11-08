@@ -1,5 +1,6 @@
 {
-  "generated": "2026-06-20T12:02:07.076454+00:00",
-  "fingerprint": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-  "events": []
+  "generated": "2026-11-08T14:50:00+09:00",
+  "events": [],
+  "policy": "B-MODE-AUTHENTICATED-ONLY",
+  "note": "若松町内会HP B方式: 全業務データはFirebase Authentication認証済み会員に限定して配信されます。未ログインでの直接閲覧はできません。"
 }

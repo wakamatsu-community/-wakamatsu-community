@@ -944,6 +944,7 @@ body {
     border-radius: 12px;
     background: #fff;
     padding: 10px;
+    min-height: 480px;
 }
 
 #custom-calendar .fc .fc-toolbar-title {
