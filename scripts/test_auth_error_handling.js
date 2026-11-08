@@ -14,11 +14,12 @@ const runtimeConfigPath = path.resolve(__dirname, "../js/runtime-config.js");
 const rawRuntimeCode = fs.readFileSync(runtimeConfigPath, "utf8");
 const cjsRuntimeCode = rawRuntimeCode
     .replace(/export const /g, "exports.")
+    .replace(/export\s*\{\s*RUNTIME_CONFIG\s*,\s*AUTH_USER_MAP\s*\};/g, "exports.RUNTIME_CONFIG = RUNTIME_CONFIG; exports.AUTH_USER_MAP = AUTH_USER_MAP;")
     .replace(/const /g, "var ");
 const runtimeSandbox = { window: {}, exports: {} };
 vm.createContext(runtimeSandbox);
 vm.runInContext(cjsRuntimeCode, runtimeSandbox);
-const { AUTH_USER_MAP } = runtimeSandbox.exports;
+const { AUTH_USER_MAP, RUNTIME_CONFIG } = runtimeSandbox.exports;
 
 function resolveEmailFromUserId(userId) {
     const raw = String(userId || "").trim();
@@ -101,17 +102,25 @@ function createMockAuthEnvironment({
                 const snap = await mockGetDoc();
                 if (snap.exists()) {
                     const data = snap.data() || {};
-                    const role = String(data.role || "guest").trim().toLowerCase();
+                    const rawRole = data.role || data.Role || data.役職 || data.ロール || "guest";
+                    let role = String(rawRole).trim().toLowerCase();
+                    if (role === "管理者" || role === "システム管理者") role = "admin";
+                    else if (role === "役員") role = "officer";
+                    else if (role === "会員" || role === "一般会員" || role === "町内会員") role = "member";
+
                     const isAdmin = role === "admin";
                     const isOfficer = role === "officer" || isAdmin;
                     const isMember = role === "member" || isOfficer;
+
+                    const name = data.name || data.displayName || data.username || data.氏名 || data.名前 || user.displayName || user.email;
+
                     profile = {
                         user,
                         uid: user.uid,
                         email: user.email,
                         role,
-                        name: data.name || user.displayName || user.email,
-                        group: data.group || "",
+                        name,
+                        group: data.group || data.組 || "",
                         isAdmin,
                         isOfficer,
                         isMember,
@@ -219,7 +228,7 @@ function createMockAuthEnvironment({
 }
 
 (async () => {
-    // テストケース A: 正常ログイン (admin: niina)
+    // テストケース A1: 正常管理者ログイン (admin: niina)
     {
         const env = createMockAuthEnvironment({
             firestoreDocExists: true,
@@ -230,7 +239,48 @@ function createMockAuthEnvironment({
         assert.strictEqual(res.role, "admin");
         assert.strictEqual(res.canManage, true);
         assert.strictEqual(env.getSignedOutCalled(), false);
-        console.log("[PASS] ケースA: 正常管理者ログイン (niina -> role:admin, canManage:true)");
+        console.log("[PASS] ケースA1: 正常管理者ログイン (niina -> role:admin, canManage:true)");
+    }
+
+    // テストケース A2: 正常役員ログイン (officer)
+    {
+        const env = createMockAuthEnvironment({
+            firestoreDocExists: true,
+            firestoreDocData: { role: "officer", name: "役員太郎" }
+        });
+        const res = await env.testSignIn("officer", "validPassword123");
+        assert.strictEqual(res.ok, true);
+        assert.strictEqual(res.role, "officer");
+        assert.strictEqual(res.canManage, true);
+        assert.strictEqual(env.getSignedOutCalled(), false);
+        console.log("[PASS] ケースA2: 正常役員ログイン (officer -> role:officer, canManage:true)");
+    }
+
+    // テストケース A3: 正常一般会員ログイン (member: 閲覧専用)
+    {
+        const env = createMockAuthEnvironment({
+            firestoreDocExists: true,
+            firestoreDocData: { role: "member", name: "若松会員" }
+        });
+        const res = await env.testSignIn("member", "validPasscode");
+        assert.strictEqual(res.ok, true);
+        assert.strictEqual(res.role, "member");
+        assert.strictEqual(res.canManage, false);
+        assert.strictEqual(env.getSignedOutCalled(), false);
+        console.log("[PASS] ケースA3: 正常会員ログイン (member -> role:member, canManage:false)");
+    }
+
+    // テストケース A4: 日本語フィールドフォールバック (役職: "管理者")
+    {
+        const env = createMockAuthEnvironment({
+            firestoreDocExists: true,
+            firestoreDocData: { 役職: "管理者", 氏名: "新名管理者" }
+        });
+        const res = await env.testSignIn("niina", "validPassword123");
+        assert.strictEqual(res.ok, true);
+        assert.strictEqual(res.role, "admin");
+        assert.strictEqual(res.canManage, true);
+        console.log("[PASS] ケースA4: 日本語フィールドフォールバック (役職:\"管理者\" -> admin)");
     }
 
     // テストケース B: Firestore に users/{UID} が存在しない場合 (NOT_FOUND)

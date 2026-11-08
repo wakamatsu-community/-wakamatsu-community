@@ -188,7 +188,14 @@ export function resolveEmailFromUserId(userId) {
  */
 export async function signInWithUserId(userId, password) {
     if (!firebaseAuth) {
-        return { ok: false, errorType: "UNCONFIGURED", message: "Firebase Authが初期化されていません。" };
+        const config = getFirebaseConfig();
+        const missing = [];
+        if (!config.apiKey) missing.push("FIREBASE_API_KEY");
+        if (!config.projectId) missing.push("FIREBASE_PROJECT_ID");
+        const detail = missing.length > 0
+            ? `Firebase接続設定が未構成です (${missing.join(", ")} が未設定)。runtime-config.js を確認してください。`
+            : "Firebase Auth の初期化に失敗しました。コンソールログを確認してください。";
+        return { ok: false, errorType: "UNCONFIGURED", message: detail };
     }
 
     const email = resolveEmailFromUserId(userId);

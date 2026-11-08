@@ -108,11 +108,26 @@ def copy_workspace() -> None:
             safe_copy(item, target)
 
 
+# Firebase Web SDK 公開接続設定 (クライアント配布用の公開値のみ。秘密鍵・パスワードは含みません)
+DEFAULT_FIREBASE_CONFIG = {
+    "FIREBASE_API_KEY": "AIzaSyCG1BF6gwCofHTPi0gCDZ6bpR2SEzGiEnI",
+    "FIREBASE_AUTH_DOMAIN": "wakamatu-hp.firebaseapp.com",
+    "FIREBASE_PROJECT_ID": "wakamatu-hp",
+    "FIREBASE_STORAGE_BUCKET": "wakamatu-hp.firebasestorage.app",
+    "FIREBASE_MESSAGING_SENDER_ID": "987020427074",
+    "FIREBASE_APP_ID": "1:987020427074:web:aef35a2492d6a5ed6cd2db",
+    "FIREBASE_MEASUREMENT_ID": "G-GYHXRC3HXP",
+}
+
+
 def inject_runtime_config() -> None:
-    runtime_config = {
-        key: os.getenv(key, "").strip()
-        for key in RUNTIME_CONFIG_KEYS
-    }
+    runtime_config = {}
+    for key in RUNTIME_CONFIG_KEYS:
+        val = os.getenv(key, "").strip()
+        if not val and key in DEFAULT_FIREBASE_CONFIG:
+            val = DEFAULT_FIREBASE_CONFIG[key]
+        runtime_config[key] = val
+
     runtime_config["GAS_WEB_APP_URL"] = normalize_gas_url(runtime_config["GAS_WEB_APP_URL"])
     if not runtime_config["GAS_WEB_APP_URL"]:
         raise RuntimeError(
@@ -140,11 +155,16 @@ def inject_runtime_config() -> None:
         + "const customUserMap = (typeof runtime.AUTH_USER_MAP === \"object\" && runtime.AUTH_USER_MAP !== null)\n"
         + "    ? runtime.AUTH_USER_MAP\n"
         + "    : {};\n\n"
-        + "export const AUTH_USER_MAP = Object.freeze({\n"
+        + "const AUTH_USER_MAP = Object.freeze({\n"
         + "    ...defaultUserMap,\n"
         + "    ...customUserMap\n"
         + "});\n\n"
-        + "export const RUNTIME_CONFIG = Object.freeze(runtime);\n"
+        + "const RUNTIME_CONFIG = Object.freeze(runtime);\n\n"
+        + "if (typeof window !== \"undefined\") {\n"
+        + "    window.RUNTIME_CONFIG = RUNTIME_CONFIG;\n"
+        + "    window.AUTH_USER_MAP = AUTH_USER_MAP;\n"
+        + "}\n\n"
+        + "export { RUNTIME_CONFIG, AUTH_USER_MAP };\n"
     )
     runtime_config_path.write_text(content, encoding="utf-8")
 

@@ -83,7 +83,13 @@ jobs:
               print("ERROR: GAS_WEB_APP_URL was not injected into dist/js/runtime-config.js")
               sys.exit(1)
 
-          print(f"OK: runtime config injected (GAS_WEB_APP_URL length={len(gas)})")
+          fb_api_key = str(cfg.get("FIREBASE_API_KEY", "")).strip()
+          fb_project_id = str(cfg.get("FIREBASE_PROJECT_ID", "")).strip()
+          if not fb_api_key or not fb_project_id:
+              print("ERROR: Firebase config (API_KEY, PROJECT_ID) is missing in dist/js/runtime-config.js")
+              sys.exit(1)
+
+          print(f"OK: runtime config injected (GAS_WEB_APP_URL length={len(gas)}, FIREBASE_PROJECT_ID={fb_project_id})")
           PY
 
       - name: Upload Pages artifact
