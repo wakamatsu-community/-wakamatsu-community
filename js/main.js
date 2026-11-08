@@ -460,8 +460,15 @@ document.addEventListener("DOMContentLoaded", async () => {
             });
             return;
         } else {
-            // Firebase未構成時も未認証アクセスは遮断しログインゲートを表示 (要件1 & 2)
-            showLoginGate();
+            // Firebase未構成時: 原因を明示してログインゲートを表示 (要件1 & 2 & 4)
+            const missing = [];
+            const cfg = typeof window !== "undefined" && window.RUNTIME_CONFIG ? window.RUNTIME_CONFIG : {};
+            if (!cfg.FIREBASE_API_KEY) missing.push("APIキー");
+            if (!cfg.FIREBASE_PROJECT_ID) missing.push("プロジェクトID");
+            const err = missing.length > 0
+                ? `【システム警告】Firebase接続設定が不足しています (${missing.join(", ")} が未設定)。runtime-config.js を確認してください。`
+                : "【システム警告】Firebase Authentication の初期化に失敗しました。";
+            showLoginGate(err);
             return;
         }
     } catch (err) {
