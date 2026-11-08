@@ -7,6 +7,7 @@
 
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
 import { auth, isFirebaseReady } from "./firebase-init.js";
+import { requireMemberAuth } from "./main.js";
 
 function createDriveFileUrls(file) {
     const fileId = file.id || "";
@@ -397,10 +398,13 @@ function bindGalleryUploadForm(config, onUploaded) {
         const comment = String(fd.get("comment") || "").trim();
         const files = (fd.getAll("photos") || []).filter((f) => f instanceof File && f.size > 0);
 
-        if (isFirebaseReady && !auth?.currentUser) {
-            status.textContent = "写真の投稿には会員ログインが必要です。ログインしてから再度お試しください。";
-            return;
-        }
+        // 会員認証確認 (未ログインならログインモーダルを表示し、復帰時は手動確認を促す)
+        const isAuthed = await requireMemberAuth({
+            actionLabel: "写真アルバムへの投稿",
+            buttonLabel: "Google Driveへ投稿",
+            statusEl: status
+        });
+        if (!isAuthed) return;
 
         if (!uploaderName || !destination || files.length === 0) {
             status.textContent = "投稿者名・保存先・写真ファイルを入力してください。";

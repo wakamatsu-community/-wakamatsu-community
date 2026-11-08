@@ -9,6 +9,7 @@
 
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
 import { db, isFirebaseReady, auth } from "./firebase-init.js";
+import { requireMemberAuth } from "./main.js";
 import {
     collection,
     doc,
@@ -270,6 +271,15 @@ export async function initOpinionExchangePage(config = {}) {
     if (form) {
         form.addEventListener("submit", async (e) => {
             e.preventDefault();
+
+            // 会員認証確認 (未ログインならログインモーダルを表示し、復帰時は手動確認を促す)
+            const isAuthed = await requireMemberAuth({
+                actionLabel: "ご意見・ご相談の投稿",
+                buttonLabel: "投稿する",
+                statusEl: status
+            });
+            if (!isAuthed) return;
+
             const fd = new FormData(form);
 
             const record = {
@@ -359,6 +369,15 @@ export async function initAdminOpinionExchange(config = {}) {
 
         form.addEventListener("submit", async (e) => {
             e.preventDefault();
+
+            // 会員認証確認 (未ログインならログインモーダルを表示し、復帰時は手動確認を促す)
+            const isAuthed = await requireMemberAuth({
+                actionLabel: "ご意見・ご相談の投稿",
+                buttonLabel: "投稿する",
+                statusEl: status
+            });
+            if (!isAuthed) return;
+
             const fd = new FormData(form);
             const nextStatus = fd.get("status");
             const reply = String(fd.get("reply") || "").trim();

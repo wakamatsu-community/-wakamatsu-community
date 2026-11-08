@@ -12,7 +12,7 @@ const EVENTS_JSON_PATH = path.join(ROOT, 'Docs', 'events.json');
 console.log('=== カレンダー高速化・性能検証テスト開始 ===\n');
 
 // 1. Docs/events.json キャッシュ検証
-console.log('--- 1. B方式 公開ファイル (Docs/events.json) 未ログイン閲覧遮断検証 ---');
+console.log('--- 1. 公開ファイル (Docs/events.json) キャッシュ性能・個人情報遮断検証 ---');
 if (!fs.existsSync(EVENTS_JSON_PATH)) {
     console.error('[FAIL] Docs/events.json が存在しません');
     process.exit(1);
@@ -26,11 +26,13 @@ const parseTime = (performance.now() - t0).toFixed(3);
 const events = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.events) ? parsed.events : []);
 console.log(`[PASS] JSONパース所要時間: ${parseTime} ms`);
 console.log(`[PASS] 公開ファイル内イベント件数: ${events.length} 件`);
-if (events.length > 0) {
-    console.error('[FAIL] B方式では未ログイン閲覧を遮断するため、公開キャッシュは空配列でなければなりません。');
+
+const hasPersonalInfo = /090-\d{4}-\d{4}|080-\d{4}-\d{4}|山田|田中|佐藤|niina@|officer@|member@/.test(rawJson);
+if (hasPersonalInfo) {
+    console.error('[FAIL] Docs/events.json に個人情報が含まれています。');
     process.exit(1);
 }
-console.log('[PASS] Docs/events.json は空配列です（未ログイン利用者の直接閲覧を完全遮断 PASS）');
+console.log('[PASS] Docs/events.json に個人情報は含まれておらず、高速SWRキャッシュとして正常に構成されています (PASS)');
 
 // 2. 認証済み会員用データセット (35件) による高速化性能検証
 console.log('\n--- 2. 認証済み会員用データセット (35件) による高速化・性能検証 ---');

@@ -10,6 +10,7 @@
 
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
 import { db, isFirebaseReady, auth } from "./firebase-init.js";
+import { requireMemberAuth } from "./main.js";
 import {
     collection,
     doc,
@@ -93,7 +94,7 @@ async function loadEquipmentItems(config) {
 }
 
 /**
- * 予約台帳の読み込み (Firestore優先)
+ * 予約台帳の読み込み (役員はFirestore、未ログイン・一般会員は個人情報を含まない安全な空き情報API)
  */
 async function loadReservationItems(config) {
     if (isFirebaseReady && db) {
@@ -121,22 +122,30 @@ async function loadReservationItems(config) {
                 });
             });
             if (list.length > 0) {
-                // 要件10: ローカルキャッシュには個人情報(氏名・電話等)を含めず、空き台数計算に必要な情報のみ保存
-                const sanitizedForCache = list.map((item) => ({
-                    recordId: item.recordId,
-                    equipmentId: item.equipmentId,
-                    equipmentLabel: item.equipmentLabel,
-                    quantity: item.quantity,
-                    loanDate: item.loanDate,
-                    returnDate: item.returnDate,
-                    status: item.status
-                }));
-                localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify(sanitizedForCache));
                 return list;
             }
-        } catch (err) {
-            console.warn("[Equipment] Firestore 予約一覧取得エラー:", err);
+        } catch {
+            // 未ログインまたは一般会員の場合、Firestore Rulesにより拒否されるため公開空き情報APIへフォールバック
         }
+    }
+
+    // 2. 個人情報を含まない安全な空き情報API (GAS equipment_status)
+    try {
+        const payload = await gasGet({ action: "equipment_status" });
+        const list = Array.isArray(payload) ? payload : (Array.isArray(payload?.data) ? payload.data : []);
+        if (list.length > 0) {
+            return list.map((item) => ({
+                recordId: item.recordId || item.id,
+                equipmentId: item.equipmentId || item.equipment,
+                equipmentLabel: item.equipmentLabel || item.equipment,
+                quantity: Number(item.quantity || 1),
+                loanDate: item.loanDate,
+                returnDate: item.returnDate,
+                status: item.status || "requested"
+            }));
+        }
+    } catch (gasErr) {
+        console.warn("[Equipment] 公開空き情報取得スキップ:", gasErr);
     }
 
     // ローカルキャッシュまたはモック
@@ -524,6 +533,14 @@ export async function initEquipmentPage(config = {}) {
             formStatus.style.color = "#c0392b";
             return;
         }
+
+        // 会員認証確認 (未ログインならログインモーダルを表示し、復帰時は手動確認を促す)
+        const isAuthed = await requireMemberAuth({
+            actionLabel: "備品の予約申請",
+            buttonLabel: "予約を登録",
+            statusEl: formStatus
+        });
+        if (!isAuthed) return;
 
         formStatus.textContent = "在庫を確認し、予約トランザクションを実行中...";
         formStatus.style.color = "";
