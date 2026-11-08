@@ -17,9 +17,9 @@ const DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycby99ILht74ZtoQk
 
 // 要件3 & 4: ユーザーIDとFirebase認証メールアドレスの対応表 (パスワード・秘密鍵を含まない設定管理)
 const defaultUserMap = {
-    niina: "niina@wakamatsu-cho.internal",
-    officer: "officer@wakamatsu-cho.internal",
-    member: "member@wakamatsu-cho.internal"
+    niina: "niina@gmail.com",
+    officer: "officer@gmail.com",
+    member: "member@gmail.com"
 };
 const customUserMap = (typeof runtime.AUTH_USER_MAP === "object" && runtime.AUTH_USER_MAP !== null)
     ? runtime.AUTH_USER_MAP

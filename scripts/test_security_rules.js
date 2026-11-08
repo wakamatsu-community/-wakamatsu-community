@@ -15,7 +15,9 @@ const vm = require('vm');
 
 const configPath = path.resolve(__dirname, '../dist/js/runtime-config.js');
 const rawCode = fs.readFileSync(configPath, 'utf8');
-const cjsCode = rawCode.replace(/export const /g, 'exports.');
+const cjsCode = rawCode
+    .replace(/export const /g, 'exports.')
+    .replace(/export\s*\{\s*RUNTIME_CONFIG\s*,\s*AUTH_USER_MAP\s*\};/g, 'exports.RUNTIME_CONFIG = RUNTIME_CONFIG; exports.AUTH_USER_MAP = AUTH_USER_MAP;');
 const sandbox = { window: {}, exports: {} };
 vm.createContext(sandbox);
 vm.runInContext(cjsCode, sandbox);
@@ -35,12 +37,12 @@ function resolveEmail(userId) {
 }
 
 const idMappingTests = [
-    { input: 'niina', expected: 'niina@wakamatsu-cho.internal' },
-    { input: 'NIINA ', expected: 'niina@wakamatsu-cho.internal' },
-    { input: 'officer', expected: 'officer@wakamatsu-cho.internal' },
-    { input: 'OFFICER', expected: 'officer@wakamatsu-cho.internal' },
-    { input: 'member', expected: 'member@wakamatsu-cho.internal' },
-    { input: 'MEMBER ', expected: 'member@wakamatsu-cho.internal' },
+    { input: 'niina', expected: 'niina@gmail.com' },
+    { input: 'NIINA ', expected: 'niina@gmail.com' },
+    { input: 'officer', expected: 'officer@gmail.com' },
+    { input: 'OFFICER', expected: 'officer@gmail.com' },
+    { input: 'member', expected: 'member@gmail.com' },
+    { input: 'MEMBER ', expected: 'member@gmail.com' },
     { input: 'admin@example.com', expected: 'admin@example.com' },
     { input: 'unknown_user', expected: null }
 ];

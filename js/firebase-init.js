@@ -207,7 +207,7 @@ export async function signInWithUserId(userId, password) {
         };
     }
 
-    const pwd = String(password || "").trim();
+    const pwd = String(password ?? "");
     if (!pwd) {
         return { ok: false, errorType: "EMPTY_PASSWORD", message: "パスワードを入力してください。" };
     }
@@ -291,7 +291,7 @@ export async function signInWithMemberPasscode(passcode, customEmail = null) {
     if (!firebaseAuth) {
         return { ok: false, errorType: "UNCONFIGURED", message: "Firebase Authが初期化されていません。" };
     }
-    const memberEmail = customEmail || RUNTIME_CONFIG.MEMBER_AUTH_EMAIL || "member@wakamatsu-cho.internal";
+    const memberEmail = customEmail || RUNTIME_CONFIG.MEMBER_AUTH_EMAIL || resolveEmailFromUserId("member") || "member@gmail.com";
     try {
         const userCredential = await signInWithEmailAndPassword(firebaseAuth, memberEmail, passcode);
         return {
