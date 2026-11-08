@@ -274,9 +274,18 @@ async function initializePageContent(page) {
 /**
  * 要件2: 未ログイン時に業務コンテンツを隠蔽し、ログイン画面だけを表示する
  */
-function showLoginGate() {
+function showLoginGate(errorMessage = null) {
     let gate = document.getElementById("b-mode-login-gate");
-    if (gate) return;
+    if (gate) {
+        if (errorMessage) {
+            const errEl = gate.querySelector("#gate-login-error");
+            if (errEl) {
+                errEl.textContent = errorMessage;
+                errEl.style.display = "block";
+            }
+        }
+        return;
+    }
 
     // 業務コンテンツ (main, nav) を非表示保護
     const mains = document.querySelectorAll("main, .global-nav, .menu-toggle");
@@ -309,7 +318,7 @@ function showLoginGate() {
                 <input name="password" type="password" autocomplete="current-password" placeholder="パスワード（または合言葉）" required style="width:100%; box-sizing:border-box; padding:10px; margin-top:4px; border:1px solid #cbd5e1; border-radius:4px;">
             </label>
             <button class="button" type="submit" style="width:100%; padding:11px; font-size:1rem; font-weight:bold; margin-top:8px;">ログイン</button>
-            <div id="gate-login-error" style="color:#c53030; font-size:0.85rem; display:none; background:#fff5f5; padding:8px 12px; border-radius:4px; border:1px solid #feb2b2;"></div>
+            <div id="gate-login-error" style="color:#c53030; font-size:0.85rem; display:${errorMessage ? "block" : "none"}; background:#fff5f5; padding:8px 12px; border-radius:4px; border:1px solid #feb2b2; line-height:1.5;">${errorMessage || ""}</div>
             <div class="note" style="margin-top:10px; font-size:0.8rem; line-height:1.6; background:#f8fafc; padding:12px; border-radius:6px; border:1px solid #e2e8f0;">
                 <strong>【利用可能なユーザーID】</strong><br>
                 ・ <strong>member</strong>: 一般会員共通（閲覧専用 / パスワード欄に町内会合言葉を入力）<br>
@@ -350,7 +359,9 @@ function showLoginGate() {
                 submitBtn.textContent = "ログイン";
                 return;
             }
-            location.reload();
+            // 認証＆権限確認が完了したため、ゲートを非表示にして画面を初期化
+            hideLoginGate();
+            await initializePageContent(document.body.dataset.page);
         } catch (err) {
             errorEl.textContent = err.message || "通信エラーが発生しました。もう一度お試しください。";
             errorEl.style.display = "block";
@@ -420,12 +431,17 @@ document.addEventListener("DOMContentLoaded", async () => {
                 // ログイン中: 権限を厳密確認 (要件4)
                 const profile = await getCurrentUserProfile();
                 if (!profile || !profile.isMember) {
-                    showLoginGate();
-                    const errEl = document.getElementById("gate-login-error");
-                    if (errEl) {
-                        errEl.textContent = "会員登録が確認できませんでした。管理者にお問い合わせください。";
-                        errEl.style.display = "block";
+                    let detailMsg = "会員登録が確認できませんでした。管理者にお問い合わせください。";
+                    if (profile) {
+                        if (profile.status === "NOT_FOUND" || !profile.docExists) {
+                            detailMsg = `Firebase認証済みですが、Firestore users/${user.uid} にドキュメントが存在しません。Firebase Consoleで登録してください。`;
+                        } else if (profile.status === "PERMISSION_DENIED") {
+                            detailMsg = `Firestoreアクセス権限エラー (permission-denied): users/${user.uid} のドキュメントIDを確認してください。`;
+                        } else if (profile.role === "guest") {
+                            detailMsg = `アカウントの権限(role)が無効です (role="guest")。管理者に権限設定をご確認ください。`;
+                        }
                     }
+                    showLoginGate(detailMsg);
                     return;
                 }
 

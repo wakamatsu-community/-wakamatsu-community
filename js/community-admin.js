@@ -1236,11 +1236,24 @@ function bindAdminLogin() {
 
     // ログイン状態反映ヘルパー
     const updateUiForProfile = (profile) => {
-        if (!profile) {
+        if (!profile || !profile.isMember) {
             setAdminPanelsVisible(false);
             if (loggedInPanel) loggedInPanel.classList.add("hidden");
             loginForm.classList.remove("hidden");
             loginForm.reset();
+
+            if (profile && profile.user) {
+                // Firebase Auth にはログインしているが Firestore に正当なプロファイルがない場合
+                let detail = "会員登録が確認できませんでした。";
+                if (profile.status === "NOT_FOUND" || !profile.docExists) {
+                    detail = `Firebase認証済みですが、Firestore users/${profile.uid} にドキュメントが存在しません。Firebase Consoleで登録してください。`;
+                } else if (profile.status === "PERMISSION_DENIED") {
+                    detail = `Firestoreアクセス権限エラー (permission-denied): users/${profile.uid} のドキュメントIDを確認してください。`;
+                } else if (profile.role === "guest") {
+                    detail = `アカウントの権限(role)が無効です (role="guest")。管理者に権限設定をご確認ください。`;
+                }
+                setStatusText(status, detail, true);
+            }
             return;
         }
 
