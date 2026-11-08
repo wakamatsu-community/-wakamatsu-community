@@ -180,8 +180,9 @@ function evaluateRuleB(ruleContext) {
     }
 
     // 5. 回覧板・資料室 (documents/{docId})
+    // 閲覧: 正規会員(member, officer, admin)のみ閲覧可。未ログインは閲覧禁止
     if (docPath.startsWith('documents/')) {
-        if (method === 'read') return true; // 公開資料は全員閲覧可
+        if (method === 'read') return isMember;
         if (method === 'create' || method === 'update' || method === 'delete' || method === 'write') {
             return isOfficer;
         }
@@ -276,8 +277,33 @@ const tests = [
         expected: true
     },
     {
-        name: '未ログイン: 回覧板(documents)閲覧許可',
+        name: '未ログイン: 回覧板(documents)閲覧拒絶 (正規会員限定)',
         ctx: { auth: authGuest, path: 'documents/doc1', method: 'read' },
+        expected: false
+    },
+    {
+        name: 'member: 回覧板(documents)閲覧許可 (正規会員)',
+        ctx: { auth: authMember, path: 'documents/doc1', method: 'read' },
+        expected: true
+    },
+    {
+        name: 'officer: 回覧板(documents)閲覧許可 (役員)',
+        ctx: { auth: authOfficer, path: 'documents/doc1', method: 'read' },
+        expected: true
+    },
+    {
+        name: 'admin: 回覧板(documents)閲覧許可 (管理者)',
+        ctx: { auth: authAdmin, path: 'documents/doc1', method: 'read' },
+        expected: true
+    },
+    {
+        name: 'member: 回覧板(documents)作成・登録試行の拒絶 (役員専用)',
+        ctx: { auth: authMember, path: 'documents/doc_new', method: 'create', requestResource: { data: { title: '総会' } } },
+        expected: false
+    },
+    {
+        name: 'officer: 回覧板(documents)作成・登録許可 (役員管理)',
+        ctx: { auth: authOfficer, path: 'documents/doc_new', method: 'create', requestResource: { data: { title: '総会' } } },
         expected: true
     },
     {

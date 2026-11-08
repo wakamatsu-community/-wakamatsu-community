@@ -8,7 +8,8 @@
  * - フォールバック機能 (config.drive のモックデータ)
  */
 
-import { db, isFirebaseReady, auth } from "./firebase-init.js";
+import { db, isFirebaseReady, auth, getCurrentUserProfile, signInWithUserId, signOutUser, onAuthStateChanged } from "./firebase-init.js";
+import { showAuthModal } from "./main.js";
 import { collection, getDocs, query, orderBy } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 /**
@@ -273,24 +274,190 @@ function bindDocumentsFilters(root) {
     searchInput?.addEventListener("input", applyFilters);
 }
 
+/**
+ * 未ログイン時のログイン画面を描画する
+ */
+function renderDocumentsLoginGate(root, onLoggedIn) {
+    const filterSection = document.getElementById("docs-filter-section");
+    if (filterSection) {
+        filterSection.classList.add("hidden");
+    }
+
+    root.innerHTML = `
+        <section class="card" style="max-width:520px; margin:20px auto; border:2px solid #247246; padding:24px;">
+            <div style="text-align:center; margin-bottom:18px;">
+                <span style="font-size:2.4rem;">🔒</span>
+                <h2 style="margin:8px 0; color:#1a365d;">回覧板・資料室 会員ログイン</h2>
+                <p class="note" style="margin-top:6px; line-height:1.6;">
+                    回覧板および町内会資料は、個人情報・地域情報保護のため<strong>若松町内会員専用</strong>となっております。<br>
+                    閲覧には町内会員（合言葉）または管理者アカウントでのログインが必要です。
+                </p>
+            </div>
+
+            <form id="docs-login-form" class="inline-form" style="display:flex; flex-direction:column; gap:14px;">
+                <label style="font-size:0.9rem; font-weight:600;">ユーザーID
+                    <input name="userId" type="text" autocomplete="username" placeholder="例: member, officer, niina" required autofocus style="width:100%; box-sizing:border-box; padding:10px; border:1px solid #cbd5e1; border-radius:4px;">
+                </label>
+                <label style="font-size:0.9rem; font-weight:600;">パスワード（または合言葉）
+                    <input name="password" type="password" autocomplete="current-password" placeholder="パスワード（または町内会報記載の合言葉）" required style="width:100%; box-sizing:border-box; padding:10px; border:1px solid #cbd5e1; border-radius:4px;">
+                </label>
+                <div class="button-row" style="margin-top:6px;">
+                    <button class="button" type="submit" id="docs-login-submit-btn" style="width:100%; padding:10px; font-size:1rem; font-weight:bold;">ログインして資料を閲覧</button>
+                </div>
+                <p id="docs-login-status" class="note" aria-live="polite" style="margin-top:6px; color:#c0392b; display:none;"></p>
+                <div class="note" style="margin-top:10px; font-size:0.85rem; line-height:1.6; background:#f8fafc; padding:12px; border-radius:6px; border:1px solid #e2e8f0;">
+                    ・ <strong>一般会員の方</strong>: ユーザーID「<code>member</code>」、パスワードに「町内会報記載の合言葉」を入力してください。<br>
+                    ・ <strong>役員・管理者</strong>: 割り当てられた個別ID（<code>officer</code>, <code>niina</code>等）でログインしてください。<br>
+                    ・ 合言葉がご不明な場合は、各組長・役員までお問い合わせください。
+                </div>
+            </form>
+        </section>
+    `;
+
+    const form = root.querySelector("#docs-login-form");
+    const statusEl = root.querySelector("#docs-login-status");
+    const submitBtn = root.querySelector("#docs-login-submit-btn");
+
+    if (form) {
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const userId = form.userId.value.trim();
+            const password = form.password.value;
+
+            submitBtn.disabled = true;
+            submitBtn.textContent = "認証中...";
+            statusEl.style.display = "none";
+
+            try {
+                const res = await signInWithUserId(userId, password);
+                if (!res.ok) {
+                    statusEl.textContent = res.message || "ユーザーIDまたはパスワードが正しくありません。";
+                    statusEl.style.display = "block";
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = "ログインして資料を閲覧";
+                    return;
+                }
+
+                // 認証成功
+                if (typeof onLoggedIn === "function") {
+                    await onLoggedIn(res.profile);
+                }
+            } catch (err) {
+                statusEl.textContent = err.message || "通信エラーが発生しました。";
+                statusEl.style.display = "block";
+                submitBtn.disabled = false;
+                submitBtn.textContent = "ログインして資料を閲覧";
+            }
+        });
+    }
+}
+
 /** 資料室ページの初期化 */
 export async function initDocumentsPage(config = {}) {
     const root = document.getElementById("documents-root");
     if (!root) return;
 
-    root.innerHTML = "<p class='note'>資料一覧を読み込み中です...</p>";
+    const filterSection = document.getElementById("docs-filter-section");
 
-    const isUserLoggedIn = Boolean(auth?.currentUser);
-    const allDocs = await fetchAllDocuments(config);
+    // ログイン状態に応じた表示の描画関数
+    const renderContent = async () => {
+        root.innerHTML = "<p class='note'>資料室の利用権限を確認しています...</p>";
 
-    const circularItems = allDocs.filter((d) => d.category === "回覧板");
-    const otherItems = allDocs.filter((d) => d.category !== "回覧板");
+        if (!auth?.currentUser) {
+            renderDocumentsLoginGate(root, async () => {
+                await renderContent();
+            });
+            return;
+        }
 
-    root.innerHTML = "";
-    root.appendChild(buildCircularSection(circularItems, isUserLoggedIn));
-    if (otherItems.length > 0) {
-        root.appendChild(buildOtherDocsSection(otherItems, isUserLoggedIn));
+        const profile = await getCurrentUserProfile();
+        if (!profile || !profile.isMember) {
+            renderDocumentsLoginGate(root, async () => {
+                await renderContent();
+            });
+            return;
+        }
+
+        // ログイン済み（会員・役員・管理者）
+        if (filterSection) {
+            filterSection.classList.remove("hidden");
+        }
+
+        root.innerHTML = "<p class='note'>資料一覧を読み込み中です...</p>";
+        const allDocs = await fetchAllDocuments(config);
+
+        const circularItems = allDocs.filter((d) => d.category === "回覧板");
+        const otherItems = allDocs.filter((d) => d.category !== "回覧板");
+
+        root.innerHTML = "";
+
+        // ログイン状態ヘッダーバー
+        const authBar = document.createElement("div");
+        authBar.className = "card sub-card auth-status-bar";
+        authBar.style.display = "flex";
+        authBar.style.flexWrap = "wrap";
+        authBar.style.justifyContent = "space-between";
+        authBar.style.alignItems = "center";
+        authBar.style.gap = "10px";
+        authBar.style.marginBottom = "16px";
+        authBar.style.background = "#f0fdf4";
+        authBar.style.borderColor = "#86efac";
+
+        const roleLabel = profile.isAdmin ? "管理者" : (profile.isOfficer ? "役員" : "一般会員");
+        const userDesc = document.createElement("div");
+        userDesc.innerHTML = `<span>👤 <strong>${profile.name || "会員"}様</strong>（${roleLabel}）としてログイン中</span>`;
+
+        const actionGroup = document.createElement("div");
+        actionGroup.style.display = "flex";
+        actionGroup.style.gap = "8px";
+        actionGroup.style.alignItems = "center";
+
+        if (profile.isOfficer) {
+            const adminLink = document.createElement("a");
+            adminLink.href = "admin.html";
+            adminLink.className = "button-link";
+            adminLink.style.padding = "4px 10px";
+            adminLink.style.fontSize = "0.85rem";
+            adminLink.style.background = "#1a365d";
+            adminLink.textContent = "📂 資料管理（管理ページ）";
+            actionGroup.appendChild(adminLink);
+        }
+
+        const logoutBtn = document.createElement("button");
+        logoutBtn.type = "button";
+        logoutBtn.className = "button";
+        logoutBtn.style.padding = "4px 10px";
+        logoutBtn.style.fontSize = "0.85rem";
+        logoutBtn.style.background = "#64748b";
+        logoutBtn.textContent = "ログアウト";
+        logoutBtn.addEventListener("click", async () => {
+            await signOutUser();
+            await renderContent();
+        });
+        actionGroup.appendChild(logoutBtn);
+
+        authBar.append(userDesc, actionGroup);
+        root.appendChild(authBar);
+
+        // 資料セクション描画
+        root.appendChild(buildCircularSection(circularItems, true));
+        if (otherItems.length > 0) {
+            root.appendChild(buildOtherDocsSection(otherItems, true));
+        }
+
+        bindDocumentsFilters(root);
+    };
+
+    // 初回描画
+    await renderContent();
+
+    // 外部からの認証状態変更イベントまたは onAuthStateChanged を監視
+    if (auth) {
+        onAuthStateChanged(auth, async () => {
+            await renderContent();
+        });
     }
-
-    bindDocumentsFilters(root);
+    window.addEventListener("app-auth-changed", async () => {
+        await renderContent();
+    });
 }

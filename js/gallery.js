@@ -6,8 +6,8 @@
  */
 
 import { gasGet, gasPost, getGasUrl } from "./gas-api.js";
-import { auth, isFirebaseReady } from "./firebase-init.js";
-import { requireMemberAuth } from "./main.js";
+import { auth, isFirebaseReady, getCurrentUserProfile, onAuthStateChanged } from "./firebase-init.js";
+import { requireMemberAuth, showAuthModal } from "./main.js";
 
 function createDriveFileUrls(file) {
     const fileId = file.id || "";
@@ -487,6 +487,68 @@ async function buildAlbumsForRender(config, albums) {
 }
 
 /**
+ * 写真アルバムのログイン状態バーを更新する
+ */
+async function updateGalleryAuthBar() {
+    const bar = document.getElementById("gallery-auth-status-bar");
+    if (!bar) return;
+
+    if (!auth?.currentUser) {
+        bar.className = "card sub-card auth-status-bar";
+        bar.style.display = "flex";
+        bar.style.flexWrap = "wrap";
+        bar.style.justifyContent = "space-between";
+        bar.style.alignItems = "center";
+        bar.style.gap = "8px";
+        bar.style.background = "#f8fafc";
+        bar.style.borderColor = "#cbd5e1";
+        bar.innerHTML = `
+            <span style="font-size:0.9rem; color:#475569;">📸 写真の投稿には町内会員ログインが必要です。</span>
+            <button type="button" class="button" id="gallery-login-trigger" style="padding:4px 12px; font-size:0.85rem;">会員ログイン</button>
+        `;
+        const btn = bar.querySelector("#gallery-login-trigger");
+        if (btn) {
+            btn.addEventListener("click", () => {
+                showAuthModal({
+                    actionLabel: "写真アルバムへの投稿",
+                    buttonLabel: "Google Driveへ投稿",
+                    onSuccess: () => {
+                        updateGalleryAuthBar();
+                    }
+                });
+            });
+        }
+        return;
+    }
+
+    const profile = await getCurrentUserProfile();
+    if (!profile || !profile.isMember) {
+        bar.innerHTML = "";
+        return;
+    }
+
+    const roleLabel = profile.isAdmin ? "管理者" : (profile.isOfficer ? "役員" : "一般会員");
+    bar.className = "card sub-card auth-status-bar";
+    bar.style.display = "flex";
+    bar.style.flexWrap = "wrap";
+    bar.style.justifyContent = "space-between";
+    bar.style.alignItems = "center";
+    bar.style.gap = "8px";
+    bar.style.background = "#f0fdf4";
+    bar.style.borderColor = "#86efac";
+
+    let officerHtml = "";
+    if (profile.isOfficer) {
+        officerHtml = `<a href="admin.html#admin-gallery-section" class="button-link" style="padding:4px 10px; font-size:0.85rem; background:#1a365d;">📸 写真承認・管理（管理ページ）</a>`;
+    }
+
+    bar.innerHTML = `
+        <span style="font-size:0.9rem; color:#166534;">✅ <strong>${profile.name || "会員"}様</strong>（${roleLabel}）としてログイン中。写真を投稿できます。</span>
+        ${officerHtml}
+    `;
+}
+
+/**
  * ギャラリーページを初期化します。
  */
 export function initGalleryPage(config) {
@@ -557,4 +619,14 @@ export function initGalleryPage(config) {
     searchInput?.addEventListener("input", applyFilters);
     bindGalleryUploadForm(config, renderAlbums);
     renderAlbums();
+
+    updateGalleryAuthBar();
+    if (auth) {
+        onAuthStateChanged(auth, () => {
+            updateGalleryAuthBar();
+        });
+    }
+    window.addEventListener("app-auth-changed", () => {
+        updateGalleryAuthBar();
+    });
 }
